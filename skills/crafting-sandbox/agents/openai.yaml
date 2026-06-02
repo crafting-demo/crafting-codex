@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crafting Sandbox"
+  short_description: "Create and connect Crafting sandboxes for Codex."
+  default_prompt: "Use Crafting to create a sandbox and connect it as a Codex remote environment."
