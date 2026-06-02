@@ -153,10 +153,31 @@ write_ssh_alias() {
   touch "$ssh_config"
   chmod 600 "$ssh_config"
 
-  awk -v alias_name="$alias_name" '
-    $0 == "# >>> codex-crafting-remote " alias_name { skip=1; next }
-    $0 == "# <<< codex-crafting-remote " alias_name { skip=0; next }
-    !skip { print }
+  awk -v alias_name="$alias_name" -v host_name="$host_name" '
+    /^# >>> codex-crafting-remote / {
+      in_block = 1
+      block = $0 ORS
+      block_alias = substr($0, length("# >>> codex-crafting-remote ") + 1)
+      next
+    }
+    in_block {
+      block = block $0 ORS
+      if ($0 == "# <<< codex-crafting-remote " block_alias) {
+        if (block_alias != alias_name && index(block, "HostName " host_name) == 0) {
+          printf "%s", block
+        }
+        in_block = 0
+        block = ""
+        block_alias = ""
+      }
+      next
+    }
+    { print }
+    END {
+      if (in_block) {
+        printf "%s", block
+      }
+    }
   ' "$ssh_config" > "$tmp"
 
   cat >> "$tmp" <<EOF
@@ -322,16 +343,16 @@ main() {
   echo
   echo "Done. SSH and remote Codex are ready."
   echo
-  echo "Codex App does not always auto-discover newly written SSH aliases."
-  echo "If '${alias_name}' is not visible in Settings -> Connections -> SSH, add it manually:"
+  echo "Codex App owns the final connection registration."
+  echo "Open Settings -> Connections -> SSH, select or add '${alias_name}', enable it, and choose the remote project folder: ${project_dir}"
+  echo
+  echo "If '${alias_name}' is not visible in the Add SSH Connection list, add it manually:"
   echo
   echo "  Settings -> Connections -> SSH -> Add"
   echo "  Display name: ${alias_name}"
   echo "  Target mode:  Alias"
   echo "  Alias:        ${alias_name}"
   echo "  Auth mode:    No Auth"
-  echo
-  echo "Then enable the connection and choose the remote project folder: ${project_dir}"
 }
 
 main "$@"

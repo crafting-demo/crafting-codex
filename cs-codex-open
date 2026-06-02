@@ -52,6 +52,24 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+sandbox_exists() {
+  local target="$1"
+  local target_folder=""
+  local target_bare="$target"
+  local args=()
+
+  if [[ -n "$org" ]]; then
+    args+=("-O" "$org")
+  fi
+  if [[ "$target" == */* ]]; then
+    target_folder="${target%/*}"
+    target_bare="${target##*/}"
+    args+=("--folder" "$target_folder")
+  fi
+
+  NO_COLOR=1 cs "${args[@]}" sb show "$target_bare" >/dev/null 2>&1
+}
+
 open_codex() {
   local app_path="$1"
 
@@ -174,8 +192,15 @@ done
 
 sandbox_name="$sandbox_target"
 if [[ "$sandbox_target" == */* && -z "$workload" ]]; then
-  sandbox_name="${sandbox_target%/*}"
-  workload="${sandbox_target##*/}"
+  if sandbox_exists "$sandbox_target"; then
+    sandbox_name="$sandbox_target"
+  elif [[ "${sandbox_target%/*}" == */* ]] && sandbox_exists "${sandbox_target%/*}"; then
+    sandbox_name="${sandbox_target%/*}"
+    workload="${sandbox_target##*/}"
+  else
+    sandbox_name="${sandbox_target%/*}"
+    workload="${sandbox_target##*/}"
+  fi
 fi
 
 require_cmd cs

@@ -93,6 +93,7 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    ```
 
    The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
+   The wrapper resolves folder-scoped sandbox names such as `lab/ricky5` before treating a slash as `SANDBOX/WORKLOAD`.
    The setup prefers an existing remote `codex` command and installs `@openai/codex` by default when it is missing.
    Pass `--no-install-codex` only when remote installation is not acceptable.
    The `cs codex-open` wrapper then opens Codex Desktop with `codex app`.
@@ -144,7 +145,7 @@ When the user asks for a new Codex thread or local Codex App remote environment:
 
    Then enable the connection and choose the remote project folder.
 
-The script can automate SSH config and remote readiness. The Codex App UI currently owns the final connection registration, enable, and project-folder selection actions. Do not claim the sandbox is visible in the Codex UI unless it has been manually verified.
+The script can automate SSH config and remote readiness. The Codex App UI currently owns the final connection registration, enable, and project-folder selection actions. If the alias is visible in the app's Add SSH Connection list, tell the user to select/enable that alias and choose the remote project folder. Do not claim the sandbox is connected in the Codex UI unless it has been manually verified.
 
 ## References
 

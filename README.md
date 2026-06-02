@@ -51,7 +51,8 @@ This repo includes `cs-codex-open`, so after installing it you can run `cs codex
 cs extensions install https://github.com/crafting-demo/crafting-codex
 ```
 
-Then open a manually-created sandbox/workspace in Codex:
+Then open a manually-created sandbox/workspace in Codex. Folder-scoped sandbox names
+such as `lab/ricky5` are resolved before treating a slash as `SANDBOX/WORKLOAD`.
 
 ```bash
 cs codex-open SANDBOX/WORKLOAD
@@ -77,7 +78,7 @@ The extension:
 5. Removes the previous `cs codex` shim if it was created by an older version of this extension.
 6. Opens Codex Desktop with `codex app`.
 
-Codex Desktop still owns the supported final registration step. If the SSH alias does not appear automatically, open **Settings -> Connections -> SSH**, add or enable the alias, and choose the remote project folder.
+Codex Desktop still owns the supported final registration step. The extension writes the SSH alias so it appears in the app's **Add SSH Connection** list, but the app must add/enable the connection and choose the remote project folder from **Settings -> Connections -> SSH**.
 
 ## Prerequisites
 
