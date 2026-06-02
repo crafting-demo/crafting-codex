@@ -59,7 +59,7 @@ cs extensions install https://github.com/crafting-demo/crafting-codex
 ```
 
 Then open a manually-created sandbox/workspace in Codex. Folder-scoped sandbox names
-such as `lab/ricky5` are resolved before treating a slash as `SANDBOX/WORKLOAD`.
+such as `FOLDER/SANDBOX` are resolved before treating a slash as `SANDBOX/WORKLOAD`.
 
 ```bash
 cs codex-open SANDBOX/WORKLOAD
@@ -73,7 +73,7 @@ Examples:
 ```bash
 cs codex-open codex-demo/app
 cs codex-open codex-demo/app codex-demo
-CODEX_CRAFTING_ORG=eng cs codex-open lab/codex-demo --workload app --alias codex-demo
+CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/codex-demo --workload app --alias codex-demo
 ```
 
 The extension:
@@ -129,10 +129,10 @@ Examples:
 
 ```bash
 skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh codex-demo
-CODEX_CRAFTING_ORG=eng skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh lab/codex-demo codex-demo
+CODEX_CRAFTING_ORG=ORG skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh FOLDER/codex-demo codex-demo
 ```
 
-Folder-scoped names like `lab/codex-demo` are supported, but most Crafting sites do not require folder scoping.
+Folder-scoped names like `FOLDER/codex-demo` are supported, but most Crafting sites do not require folder scoping.
 
 The script:
 

@@ -63,20 +63,39 @@ extract_host() {
       in_ssh_addresses = 0
       next
     }
-    in_ssh_addresses && $1 == workload {
-      print $2
-      exit
+    in_ssh_addresses {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^[A-Za-z0-9._-]+$/ && index($i, ".") > 0) {
+          if ($1 == workload || $i ~ "^" workload "--") {
+            print $i
+            exit
+          }
+          if (fallback == "") {
+            fallback = $i
+          }
+        }
+      }
+    }
+    END {
+      if (fallback != "") {
+        print fallback
+      }
     }
   '
 }
 
 normalize_host() {
   local host="$1"
-  local suffix=".crafting.sandboxes.site"
+  local half
+  local len
 
   host="$(printf '%s' "$host" | tr -d '\r' | awk 'NF { print $1; exit }')"
-  if [[ "$host" == *"${suffix}"* ]]; then
-    host="${host%%${suffix}*}${suffix}"
+  len="${#host}"
+  if (( len > 0 && len % 2 == 0 )); then
+    half="${host:0:len/2}"
+    if [[ "$host" == "${half}${half}" ]]; then
+      host="$half"
+    fi
   fi
 
   printf '%s' "$host"
@@ -259,7 +278,7 @@ main() {
   local sandbox_name alias_name workload remote_user project_dir secret_path host_name default_alias org folder bare_sandbox_name alias_was_default
   sandbox_name="${1:-}"
   if [[ -z "$sandbox_name" ]]; then
-    sandbox_name="$(prompt "Crafting sandbox name, e.g. lab/codex-demo" "")"
+    sandbox_name="$(prompt "Crafting sandbox name, e.g. FOLDER/codex-demo" "")"
   fi
 
   default_alias="${CODEX_CRAFTING_ALIAS:-$(default_alias_for_sandbox "$sandbox_name")}"
@@ -315,11 +334,6 @@ main() {
 
   if [[ -z "$host_name" ]]; then
     echo "No SSH host provided; stopping." >&2
-    exit 1
-  fi
-
-  if [[ "$host_name" != *".crafting.sandboxes.site" ]]; then
-    echo "Parsed SSH host does not look like a Crafting sandbox host: ${host_name}" >&2
     exit 1
   fi
 

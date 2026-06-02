@@ -34,7 +34,7 @@ Examples:
   cs codex-open demo/app
   cs codex-open demo/app codex-demo
   cs codex-open demo --workload web --project-dir /home/owner/repo
-  cs codex-open lab/codex-demo --workload app --alias codex-demo
+  cs codex-open FOLDER/codex-demo --workload app --alias codex-demo
 
 Notes:
   The extension creates/updates the SSH alias and verifies the remote Codex CLI.

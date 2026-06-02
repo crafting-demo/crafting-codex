@@ -17,7 +17,7 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    cs login --status || cs login --if-needed
    ```
 
-   If `cs` says no organization is selected, use `cs org list` and add `-O ORG` to commands. Folder scopes are uncommon on most Crafting sites; only use `--folder FOLDER` when names like `lab/foo` fail without it or the site requires folder-scoped addressing.
+   If `cs` says no organization is selected, use `cs org list` and add `-O ORG` to commands. Folder scopes are uncommon on most Crafting sites; only use `--folder FOLDER` when folder-scoped names fail without it or the site requires folder-scoped addressing.
 
 2. Inspect available templates:
 
@@ -88,12 +88,12 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    If the org must be explicit:
 
    ```bash
-   CODEX_CRAFTING_ORG=eng scripts/setup-crafting-codex-remote.sh lab/codex-demo codex-demo
-   CODEX_CRAFTING_ORG=eng cs codex-open lab/codex-demo --workload app --alias codex-demo
+   CODEX_CRAFTING_ORG=ORG scripts/setup-crafting-codex-remote.sh FOLDER/codex-demo codex-demo
+   CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/codex-demo --workload app --alias codex-demo
    ```
 
    The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
-   The wrapper resolves folder-scoped sandbox names such as `lab/ricky5` before treating a slash as `SANDBOX/WORKLOAD`.
+   The wrapper resolves folder-scoped sandbox names before treating a slash as `SANDBOX/WORKLOAD`.
    The setup prefers an existing remote `codex` command and installs `@openai/codex` by default when it is missing.
    Pass `--no-install-codex` only when remote installation is not acceptable.
    The `cs codex-open` wrapper then opens Codex Desktop with `codex app`.
