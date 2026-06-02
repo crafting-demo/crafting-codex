@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_workload="${CODEX_CRAFTING_WORKLOAD:-app}"
+default_workload="app"
 default_remote_user="${CODEX_CRAFTING_REMOTE_USER:-owner}"
 default_project_dir="${CODEX_CRAFTING_PROJECT_DIR:-/home/owner}"
 default_secret_path="${CODEX_CRAFTING_SECRET_PATH:-/run/sandbox/fs/secrets/shared/shared/openai-key}"
@@ -256,7 +256,7 @@ main() {
   echo "Crafting -> Codex App remote setup"
   echo
 
-  local sandbox_name alias_name workload remote_user project_dir secret_path host_name default_alias org folder bare_sandbox_name
+  local sandbox_name alias_name workload remote_user project_dir secret_path host_name default_alias org folder bare_sandbox_name alias_was_default
   sandbox_name="${1:-}"
   if [[ -z "$sandbox_name" ]]; then
     sandbox_name="$(prompt "Crafting sandbox name, e.g. lab/codex-demo" "")"
@@ -264,6 +264,10 @@ main() {
 
   default_alias="${CODEX_CRAFTING_ALIAS:-$(default_alias_for_sandbox "$sandbox_name")}"
   alias_name="${2:-$default_alias}"
+  alias_was_default=0
+  if [[ -z "${2:-}" ]]; then
+    alias_was_default=1
+  fi
 
   workload="${CODEX_CRAFTING_WORKLOAD:-$default_workload}"
   remote_user="${CODEX_CRAFTING_REMOTE_USER:-$default_remote_user}"
@@ -287,6 +291,22 @@ main() {
   echo
   echo "Looking up workload SSH host..."
   host_name="$(extract_host "$sandbox_name" "$workload" "$org" "$folder" "$bare_sandbox_name" || true)"
+  if [[ -z "$host_name" && "$sandbox_name" != */* && "$workload" != "$default_workload" ]]; then
+    echo "No host found for sandbox '${sandbox_name}' workload '${workload}'."
+    echo "Trying folder-scoped sandbox '${sandbox_name}/${workload}' workload '${default_workload}'..."
+    host_name="$(extract_host "${sandbox_name}/${workload}" "$default_workload" "$org" "$sandbox_name" "$workload" || true)"
+    if [[ -n "$host_name" ]]; then
+      folder="$sandbox_name"
+      bare_sandbox_name="$workload"
+      sandbox_name="${folder}/${bare_sandbox_name}"
+      workload="$default_workload"
+      if [[ "$alias_was_default" == "1" ]]; then
+        alias_name="$(default_alias_for_sandbox "$sandbox_name")"
+      fi
+      echo "Resolved as sandbox '${sandbox_name}' workload '${workload}'."
+      echo "SSH alias:     ${alias_name}"
+    fi
+  fi
   if [[ -z "$host_name" ]]; then
     echo "Could not parse host for workload '${workload}' from cs sb show."
     host_name="$(prompt "Paste workload SSH host" "")"

@@ -51,6 +51,13 @@ This repo includes `cs-codex-open`, so after installing it you can run `cs codex
 cs extensions install https://github.com/crafting-demo/crafting-codex
 ```
 
+To refresh an existing install:
+
+```bash
+cs extensions uninstall https://github.com/crafting-demo/crafting-codex || true
+cs extensions install https://github.com/crafting-demo/crafting-codex
+```
+
 Then open a manually-created sandbox/workspace in Codex. Folder-scoped sandbox names
 such as `lab/ricky5` are resolved before treating a slash as `SANDBOX/WORKLOAD`.
 
