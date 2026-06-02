@@ -56,6 +56,17 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+cs_cmd() {
+  env \
+    -u CRAFTING_SANDBOX_CLI_LAUNCHER_VERSION \
+    -u CRAFTING_SANDBOX_CLI_LAUNCHER_BIN \
+    -u CLOUD_SANDBOXES_CLI_LAUNCHER_VERSION \
+    -u CLOUD_SANDBOXES_CLI_LAUNCHER_BIN \
+    NO_COLOR=1 \
+    CLICOLOR=0 \
+    cs "$@"
+}
+
 ensure_org_selected() {
   if [[ -n "$ssh_host" || -n "${CODEX_CRAFTING_SSH_HOST:-}" ]]; then
     return 0
@@ -66,7 +77,7 @@ ensure_org_selected() {
 
   # Run a foreground command before any piped lookups so `cs` can prompt for
   # the org once and persist the selected context.
-  cs sb list >/dev/null
+  cs_cmd sb list >/dev/null
 }
 
 sandbox_exists() {
@@ -84,7 +95,7 @@ sandbox_exists() {
     args+=("--folder" "$target_folder")
   fi
 
-  NO_COLOR=1 cs "${args[@]}" sb show "$target_bare" >/dev/null 2>&1
+  cs_cmd "${args[@]}" sb show "$target_bare" >/dev/null 2>&1
 }
 
 open_codex() {

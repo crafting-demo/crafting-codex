@@ -38,6 +38,17 @@ debug_log() {
   fi
 }
 
+cs_cmd() {
+  env \
+    -u CRAFTING_SANDBOX_CLI_LAUNCHER_VERSION \
+    -u CRAFTING_SANDBOX_CLI_LAUNCHER_BIN \
+    -u CLOUD_SANDBOXES_CLI_LAUNCHER_VERSION \
+    -u CLOUD_SANDBOXES_CLI_LAUNCHER_BIN \
+    NO_COLOR=1 \
+    CLICOLOR=0 \
+    cs "$@"
+}
+
 ensure_org_selected() {
   local org="$1"
   local host_name="$2"
@@ -51,7 +62,7 @@ ensure_org_selected() {
 
   # Run a foreground command before any piped lookups so `cs` can prompt for
   # the org once and persist the selected context.
-  cs sb list >/dev/null
+  cs_cmd sb list >/dev/null
 }
 
 extract_host() {
@@ -71,12 +82,12 @@ extract_host() {
     debug_log "running: cs ${args[*]} --folder ${folder} sb show ${bare_name}"
     debug_log "running: cs ${args[*]} sb show ${folder}/${bare_name}"
     output="$(
-      NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" --folder "$folder" sb show "$bare_name" 2>&1 || true
-      NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "${folder}/${bare_name}" 2>&1 || true
+      cs_cmd "${args[@]}" --folder "$folder" sb show "$bare_name" 2>&1 || true
+      cs_cmd "${args[@]}" sb show "${folder}/${bare_name}" 2>&1 || true
     )"
   else
     debug_log "running: cs ${args[*]} sb show ${bare_name}"
-    output="$(NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "$bare_name" 2>&1 || true)"
+    output="$(cs_cmd "${args[@]}" sb show "$bare_name" 2>&1 || true)"
   fi
   if [[ "${CODEX_CRAFTING_DEBUG:-}" == "1" ]]; then
     {
