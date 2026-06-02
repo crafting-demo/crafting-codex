@@ -99,6 +99,54 @@ The setup script checks these Crafting-mounted secret paths:
 /run/sandbox/fs/secrets/OPENAI-API-KEY
 ```
 
+## Which OpenAI Account Pays For Usage?
+
+There are two separate pieces of auth to keep straight:
+
+1. The local Codex App uses your locally signed-in Codex/ChatGPT account while it is doing local work, such as helping you create a sandbox with the `cs` CLI.
+2. Once the Codex App connects to a sandbox over SSH, it starts the Codex app server on the remote sandbox. Threads running inside that remote environment use the remote sandbox's Codex authentication.
+
+So if the sandbox runs:
+
+```bash
+cat /run/sandbox/fs/secrets/shared/shared/openai-key | codex login --with-api-key
+```
+
+then Codex work in that sandbox uses the OpenAI API key. That means usage is billed through the OpenAI Platform project/organization for that key, not through your ChatGPT subscription credits.
+
+If you want Codex in the sandbox to use your ChatGPT/Codex account instead, use one of these options:
+
+### Option 1: Device auth in the sandbox
+
+```bash
+ssh codex-demo
+codex login --device-auth
+```
+
+Then open the printed link in your browser and sign in with the same ChatGPT account you use locally.
+
+### Option 2: Copy your local Codex auth cache
+
+If your local machine has `~/.codex/auth.json`, copy it to the sandbox:
+
+```bash
+ssh codex-demo 'mkdir -p ~/.codex && cat > ~/.codex/auth.json' < ~/.codex/auth.json
+```
+
+Treat `~/.codex/auth.json` like a password. It contains access tokens. Do not commit it, paste it into chat, or share it.
+
+Your local Codex App may store credentials in the macOS keychain instead of `~/.codex/auth.json`; in that case this option may not be available unless you configure file-based credential storage and log in again.
+
+### Option 3: Use a Codex access token
+
+If your ChatGPT workspace supports Codex access tokens, pipe one into the remote login:
+
+```bash
+printenv CODEX_ACCESS_TOKEN | ssh codex-demo 'codex login --with-access-token'
+```
+
+This is useful for trusted automation that should use ChatGPT workspace access rather than an OpenAI API key.
+
 ## Repo Layout
 
 ```text
