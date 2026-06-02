@@ -43,7 +43,11 @@ extract_host() {
     args+=("--folder" "$folder")
   fi
 
-  NO_COLOR=1 cs "${args[@]}" sb show "$bare_name" 2>&1 | awk -v workload="$workload" '{
+  if [[ "${#args[@]}" -gt 0 ]]; then
+    NO_COLOR=1 cs "${args[@]}" sb show "$bare_name" 2>&1
+  else
+    NO_COLOR=1 cs sb show "$bare_name" 2>&1
+  fi | awk -v workload="$workload" '{
     gsub(/\033\[[0-9;]*[[:alpha:]]/, "")
     if ($1 == workload) { print $2; exit }
   }'
