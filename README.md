@@ -9,7 +9,7 @@ It teaches Codex how to:
 - List and inspect Crafting templates.
 - Create, show, wait for, resume, and inspect sandboxes.
 - Execute commands inside sandbox workloads.
-- Connect a Crafting sandbox as a Codex App SSH remote environment.
+- Prepare a Crafting sandbox as a Codex App SSH remote environment.
 - Install a `cs codex-open` extension for opening manually-created sandboxes in Codex.
 
 ## Install / Use With Codex
@@ -103,11 +103,11 @@ Use Crafting to list available templates and tell me which one looks like the fr
 ```
 
 ```text
-Create a Crafting sandbox from the front-end template, then connect it as a Codex remote environment.
+Create a Crafting sandbox from the front-end template, prepare it for Codex remote access, then give me the Codex App SSH settings steps.
 ```
 
 ```text
-Open a Codex thread on my local machine and create a sandbox for my front-end template.
+Open a Codex thread on my local machine, create a sandbox for my front-end template, and end with the manual Codex App remote settings instructions.
 ```
 
 For ambiguous template matches, the skill instructs Codex to ask before choosing. If there is only one plausible match, it should pick it.
@@ -145,7 +145,7 @@ The script:
 6. Logs remote Codex in from `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, or common Crafting secret paths.
 7. Runs `codex doctor --summary --ascii`.
 
-The script does not write Codex App's private local UI storage. The final connection registration, enable toggle, and project-folder selection happen in Codex App.
+The script does not write Codex App's private local UI storage. The final connection registration, enable toggle, and project-folder selection happen in Codex App. Any flow that creates a sandbox for Codex should end by telling the user the SSH alias and remote project folder, then instructing them to add or enable that alias under **Settings -> Connections -> SSH**.
 
 ## API Key Secret Paths
 

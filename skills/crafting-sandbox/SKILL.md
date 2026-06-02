@@ -5,7 +5,7 @@ description: "Use when Codex needs to work with Crafting sandboxes through the `
 
 # Crafting Sandbox
 
-Use the Crafting `cs` CLI to create and manage sandbox workspaces, then connect ready sandboxes to the local Codex App through SSH when the user wants Codex to operate inside that sandbox.
+Use the Crafting `cs` CLI to create and manage sandbox workspaces, then prepare ready sandboxes for the local Codex App through SSH when the user wants Codex to operate inside that sandbox.
 
 Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox definition schema, template semantics, secrets, SSH access, remote exec, or lifecycle behavior is uncertain or likely current, check those docs before guessing.
 
@@ -71,7 +71,7 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
 
    Prefer `cs exec` for simple noninteractive commands. Use `cs ssh` when you need behavior that matches the login shell or when testing the same SSH route the Codex App will use.
 
-6. Connect the sandbox to the local Codex App when requested:
+6. Prepare the sandbox for the local Codex App when requested:
 
    ```bash
    scripts/setup-crafting-codex-remote.sh SANDBOX_NAME [SSH_ALIAS]
@@ -96,7 +96,7 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    The wrapper resolves folder-scoped sandbox names before treating a slash as `SANDBOX/WORKLOAD`.
    The setup prefers an existing remote `codex` command and installs `@openai/codex` by default when it is missing.
    Pass `--no-install-codex` only when remote installation is not acceptable.
-   The `cs codex-open` wrapper then opens Codex Desktop with `codex app`.
+   The `cs codex-open` wrapper then opens Codex Desktop with `codex app`, but it cannot add or enable the remote connection in Codex App settings.
 
 ## Remote Codex Auth
 
@@ -127,13 +127,14 @@ codex login --device-auth
 
 ## Opening A New Codex Thread On A Sandbox
 
-When the user asks for a new Codex thread or local Codex App remote environment:
+When the user asks for a new Codex thread, a new sandbox, or a local Codex App remote environment:
 
-1. Create or identify the sandbox.
-2. Run `cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]` if the extension is installed, or run the remote setup script directly.
-3. Tell the user the SSH alias and the remote project folder reported by the setup output.
-4. Tell the user to open **Codex App -> Settings -> Connections -> SSH**. If the alias is already visible, enable it and choose the remote project folder.
-5. If the alias is not visible, tell the user to add it manually:
+1. Create a new sandbox unless the user explicitly points to an existing sandbox. Do not reuse an existing sandbox just because one is convenient.
+2. Wait for the sandbox/workload to be ready, then run `cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]` if the extension is installed, or run the remote setup script directly.
+3. Treat successful SSH setup, remote Codex verification, and `codex doctor` as preparation only. Do not claim the sandbox has been added to Codex App.
+4. End by telling the user the SSH alias and the remote project folder reported by the setup output.
+5. Tell the user to open **Codex App -> Settings -> Connections -> SSH**. If the alias is already visible, enable it and choose the remote project folder.
+6. If the alias is not visible, tell the user to add it manually:
 
    ```text
    Settings -> Connections -> SSH -> Add
@@ -145,7 +146,7 @@ When the user asks for a new Codex thread or local Codex App remote environment:
 
    Then enable the connection and choose the remote project folder.
 
-The script can automate SSH config and remote readiness. The Codex App UI currently owns the final connection registration, enable, and project-folder selection actions. If the alias is visible in the app's Add SSH Connection list, tell the user to select/enable that alias and choose the remote project folder. Do not claim the sandbox is connected in the Codex UI unless it has been manually verified.
+The script can automate SSH config and remote readiness. The Codex App UI currently owns the final connection registration, enable toggle, and project-folder selection actions. Every sandbox-creation flow for Codex App should finish with the manual settings instructions above. Do not claim the sandbox is connected in the Codex UI unless it has been manually verified.
 
 ## References
 
