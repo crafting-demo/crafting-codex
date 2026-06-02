@@ -32,6 +32,12 @@ require_cmd() {
   fi
 }
 
+debug_log() {
+  if [[ "${CODEX_CRAFTING_DEBUG:-}" == "1" ]]; then
+    printf 'setup-crafting-codex-remote debug: %s\n' "$*" >&2
+  fi
+}
+
 ensure_org_selected() {
   local org="$1"
   local host_name="$2"
@@ -62,12 +68,22 @@ extract_host() {
   fi
 
   if [[ -n "$folder" ]]; then
+    debug_log "running: cs ${args[*]} --folder ${folder} sb show ${bare_name}"
+    debug_log "running: cs ${args[*]} sb show ${folder}/${bare_name}"
     output="$(
       NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" --folder "$folder" sb show "$bare_name" 2>&1 || true
       NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "${folder}/${bare_name}" 2>&1 || true
     )"
   else
+    debug_log "running: cs ${args[*]} sb show ${bare_name}"
     output="$(NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "$bare_name" 2>&1 || true)"
+  fi
+  if [[ "${CODEX_CRAFTING_DEBUG:-}" == "1" ]]; then
+    {
+      echo "setup-crafting-codex-remote debug: cs sb show output begin"
+      printf '%s\n' "$output"
+      echo "setup-crafting-codex-remote debug: cs sb show output end"
+    } >&2
   fi
 
   printf '%s\n' "$output" | awk -v workload="$workload" '
@@ -365,6 +381,7 @@ main() {
     fi
   fi
   host_name="$(normalize_host "$host_name")"
+  debug_log "normalized host: ${host_name:-<empty>}"
   if [[ -z "$workload" ]]; then
     workload="$(infer_workload_from_host "$host_name")"
     if [[ -n "$workload" ]]; then

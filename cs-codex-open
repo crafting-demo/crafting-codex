@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 setup_script="${script_dir}/skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh"
+original_args=("$@")
 
 usage() {
   cat <<'EOF'
@@ -30,6 +31,7 @@ Options:
   --skip-login              Do not try to log remote Codex in.
   --no-open                 Prepare the remote but do not launch Codex Desktop.
   --app-path PATH           Local path to open with Codex Desktop. Default: .
+  --debug                   Print extension argument and host lookup diagnostics.
   -h, --help                Show this help.
 
 Examples:
@@ -121,6 +123,7 @@ skip_login=0
 install_codex=1
 should_open=1
 app_path="."
+debug=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -184,6 +187,10 @@ while [[ $# -gt 0 ]]; do
       app_path="$2"
       shift 2
       ;;
+    --debug)
+      debug=1
+      shift
+      ;;
     --)
       shift
       break
@@ -214,6 +221,19 @@ done
 require_cmd cs
 require_cmd ssh
 ensure_org_selected
+
+if [[ "$debug" == "1" ]]; then
+  {
+    echo "cs-codex-open debug:"
+    echo "  wrapper:      ${BASH_SOURCE[0]}"
+    echo "  script_dir:   ${script_dir}"
+    echo "  setup_script: ${setup_script}"
+    printf '  argv:'
+    printf ' %q' "${original_args[@]}"
+    printf '\n'
+    echo "  cs:           $(command -v cs)"
+  } >&2
+fi
 
 sandbox_name="$sandbox_target"
 if [[ "$sandbox_target" == */* && -z "$workload" ]]; then
@@ -255,10 +275,23 @@ if [[ "$install_codex" == "1" ]]; then
 else
   env_args+=("CODEX_CRAFTING_INSTALL_CODEX=0")
 fi
+if [[ "$debug" == "1" ]]; then
+  env_args+=("CODEX_CRAFTING_DEBUG=1")
+fi
 
 setup_args=("$sandbox_name")
 if [[ -n "$alias_name" ]]; then
   setup_args+=("$alias_name")
+fi
+
+if [[ "$debug" == "1" ]]; then
+  {
+    printf '  env_args:'
+    printf ' %q' "${env_args[@]}"
+    printf '\n  setup_args:'
+    printf ' %q' "${setup_args[@]}"
+    printf '\n'
+  } >&2
 fi
 
 env "${env_args[@]}" "$setup_script" "${setup_args[@]}"
