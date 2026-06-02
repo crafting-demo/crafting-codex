@@ -178,6 +178,27 @@ install_codex_remote() {
   remote "$alias_name" 'sudo apt-get update && sudo apt-get install -y nodejs npm && sudo npm install -g @openai/codex'
 }
 
+install_codex_shim_remote() {
+  local alias_name="$1"
+  echo "Using Crafting-provided 'cs codex'."
+  echo "Creating or updating a lightweight ~/.local/bin/codex shim that delegates to 'cs codex'..."
+  remote "$alias_name" 'command -v cs >/dev/null 2>&1 && cs codex --version >/dev/null && cs codex app-server --help >/dev/null && mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/codex" <<'"'"'EOF'"'"'
+#!/usr/bin/env sh
+exec cs codex "$@"
+EOF
+chmod +x "$HOME/.local/bin/codex"
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *)
+    touch "$HOME/.profile" "$HOME/.bashrc"
+    grep -F "export PATH=\"\$HOME/.local/bin:\$PATH\"" "$HOME/.profile" >/dev/null 2>&1 || printf "\n# Added by Crafting Codex setup.\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.profile"
+    grep -F "export PATH=\"\$HOME/.local/bin:\$PATH\"" "$HOME/.bashrc" >/dev/null 2>&1 || printf "\n# Added by Crafting Codex setup.\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.bashrc"
+    ;;
+esac
+"$HOME/.local/bin/codex" --version >/dev/null
+"$HOME/.local/bin/codex" app-server --help >/dev/null'
+}
+
 login_remote_codex() {
   local alias_name="$1"
   local preferred_secret_path="$2"
@@ -271,12 +292,16 @@ main() {
   remote "$alias_name" 'whoami; hostname; pwd'
 
   echo "Checking remote Codex CLI..."
-  if ! remote "$alias_name" 'command -v codex >/dev/null 2>&1'; then
-    echo "Remote codex command was not found."
+  if remote "$alias_name" 'command -v cs >/dev/null 2>&1 && cs codex --version >/dev/null 2>&1 && cs codex app-server --help >/dev/null 2>&1'; then
+    install_codex_shim_remote "$alias_name"
+  elif remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; command -v codex >/dev/null 2>&1'; then
+    :
+  else
+    echo "No working remote Codex entrypoint was found."
     if [[ "${CODEX_CRAFTING_INSTALL_CODEX:-}" == "1" ]]; then
       install_codex_remote "$alias_name"
     elif [[ -t 0 ]]; then
-      read -r -p "Install Node.js, npm, and @openai/codex now? [y/N]: " should_install
+      read -r -p "Crafting-provided 'cs codex' was not found. Install Node.js, npm, and @openai/codex now? [y/N]: " should_install
       case "$should_install" in
         y|Y|yes|YES) install_codex_remote "$alias_name" ;;
         *)
@@ -290,7 +315,7 @@ main() {
     fi
   fi
 
-  remote "$alias_name" 'command -v codex && codex --version && codex app-server --help >/dev/null && echo app-server-ok'
+  remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; command -v codex && codex --version && codex app-server --help >/dev/null && echo app-server-ok'
 
   login_remote_codex "$alias_name" "$secret_path"
 

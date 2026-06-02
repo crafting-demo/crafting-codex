@@ -73,8 +73,9 @@ The extension:
 1. Reuses `skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh`.
 2. Creates or updates a concrete SSH alias in `~/.ssh/config`.
 3. Verifies SSH and remote `codex app-server` readiness.
-4. Optionally installs remote Node.js, npm, and `@openai/codex` with `--install-codex`.
-5. Opens Codex Desktop with `codex app`.
+4. Uses an existing remote `codex` command, or creates a lightweight `codex` shim for Crafting-provided `cs codex`.
+5. Falls back to installing Node.js, npm, and `@openai/codex` only with `--install-codex` or interactive confirmation.
+6. Opens Codex Desktop with `codex app`.
 
 Codex Desktop still owns the supported final registration step. If the SSH alias does not appear automatically, open **Settings -> Connections -> SSH**, add or enable the alias, and choose the remote project folder.
 

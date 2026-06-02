@@ -93,7 +93,8 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    ```
 
    The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
-   Pass `--install-codex` when a fresh workspace does not already have remote `codex` on `PATH`.
+   The setup prefers an existing remote `codex` command, then a lightweight shim for Crafting-provided `cs codex`.
+   Pass `--install-codex` only when neither remote entrypoint exists and installing `@openai/codex` is acceptable.
    The `cs codex` wrapper then opens Codex Desktop with `codex app`.
 
 ## Remote Codex Auth
