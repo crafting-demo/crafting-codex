@@ -81,21 +81,21 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    already exists, prefer the friendlier wrapper:
 
    ```bash
-   cs codex SANDBOX_NAME/WORKLOAD [SSH_ALIAS]
-   cs codex SANDBOX_NAME/WORKLOAD --install-codex
+   cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]
+   cs codex-open SANDBOX_NAME/WORKLOAD --no-install-codex
    ```
 
    If the org must be explicit:
 
    ```bash
    CODEX_CRAFTING_ORG=eng scripts/setup-crafting-codex-remote.sh lab/codex-demo codex-demo
-   CODEX_CRAFTING_ORG=eng cs codex lab/codex-demo --workload app --alias codex-demo
+   CODEX_CRAFTING_ORG=eng cs codex-open lab/codex-demo --workload app --alias codex-demo
    ```
 
    The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
-   The setup prefers an existing remote `codex` command, then a lightweight shim for Crafting-provided `cs codex`.
-   Pass `--install-codex` only when neither remote entrypoint exists and installing `@openai/codex` is acceptable.
-   The `cs codex` wrapper then opens Codex Desktop with `codex app`.
+   The setup prefers an existing remote `codex` command and installs `@openai/codex` by default when it is missing.
+   Pass `--no-install-codex` only when remote installation is not acceptable.
+   The `cs codex-open` wrapper then opens Codex Desktop with `codex app`.
 
 ## Remote Codex Auth
 
@@ -129,7 +129,7 @@ codex login --device-auth
 When the user asks for a new Codex thread or local Codex App remote environment:
 
 1. Create or identify the sandbox.
-2. Run `cs codex SANDBOX_NAME/WORKLOAD [SSH_ALIAS]` if the extension is installed, or run the remote setup script directly.
+2. Run `cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]` if the extension is installed, or run the remote setup script directly.
 3. Tell the user the SSH alias and suggested remote project folder, usually `/home/owner`.
 4. Tell the user to open **Codex App -> Settings -> Connections -> SSH**. If the alias is already visible, enable it and choose the remote project folder.
 5. If the alias is not visible, tell the user to add it manually:

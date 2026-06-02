@@ -10,7 +10,7 @@ It teaches Codex how to:
 - Create, show, wait for, resume, and inspect sandboxes.
 - Execute commands inside sandbox workloads.
 - Connect a Crafting sandbox as a Codex App SSH remote environment.
-- Install a `cs codex` extension for opening manually-created sandboxes in Codex.
+- Install a `cs codex-open` extension for opening manually-created sandboxes in Codex.
 
 ## Install / Use With Codex
 
@@ -45,7 +45,7 @@ cp -R skills/crafting-sandbox ~/.codex/skills/
 ## Install As A `cs` Extension
 
 Crafting's CLI can install git repositories that contain executables named `cs-FOO`.
-This repo includes `cs-codex`, so after installing it you can run `cs codex ...`.
+This repo includes `cs-codex-open`, so after installing it you can run `cs codex-open ...`.
 
 ```bash
 cs extensions install https://github.com/crafting-demo/crafting-codex
@@ -54,18 +54,18 @@ cs extensions install https://github.com/crafting-demo/crafting-codex
 Then open a manually-created sandbox/workspace in Codex:
 
 ```bash
-cs codex SANDBOX/WORKLOAD
-cs codex SANDBOX/WORKLOAD SSH_ALIAS
-cs codex SANDBOX --workload WORKLOAD --project-dir /home/owner
-cs codex SANDBOX/WORKLOAD --install-codex
+cs codex-open SANDBOX/WORKLOAD
+cs codex-open SANDBOX/WORKLOAD SSH_ALIAS
+cs codex-open SANDBOX --workload WORKLOAD --project-dir /home/owner
+cs codex-open SANDBOX/WORKLOAD --no-install-codex
 ```
 
 Examples:
 
 ```bash
-cs codex codex-demo/app
-cs codex codex-demo/app codex-demo
-CODEX_CRAFTING_ORG=eng cs codex lab/codex-demo --workload app --alias codex-demo
+cs codex-open codex-demo/app
+cs codex-open codex-demo/app codex-demo
+CODEX_CRAFTING_ORG=eng cs codex-open lab/codex-demo --workload app --alias codex-demo
 ```
 
 The extension:
@@ -73,8 +73,8 @@ The extension:
 1. Reuses `skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh`.
 2. Creates or updates a concrete SSH alias in `~/.ssh/config`.
 3. Verifies SSH and remote `codex app-server` readiness.
-4. Uses an existing remote `codex` command, or creates a lightweight `codex` shim for Crafting-provided `cs codex`.
-5. Falls back to installing Node.js, npm, and `@openai/codex` only with `--install-codex` or interactive confirmation.
+4. Uses an existing remote `codex` command, or installs Node.js, npm, and `@openai/codex` by default when `codex` is missing.
+5. Removes the previous `cs codex` shim if it was created by an older version of this extension.
 6. Opens Codex Desktop with `codex app`.
 
 Codex Desktop still owns the supported final registration step. If the SSH alias does not appear automatically, open **Settings -> Connections -> SSH**, add or enable the alias, and choose the remote project folder.
@@ -205,7 +205,7 @@ This is useful for trusted automation that should use ChatGPT workspace access r
 ## Repo Layout
 
 ```text
-cs-codex
+cs-codex-open
 skills/crafting-sandbox/
   SKILL.md
   agents/openai.yaml

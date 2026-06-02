@@ -7,8 +7,8 @@ setup_script="${script_dir}/skills/crafting-sandbox/scripts/setup-crafting-codex
 usage() {
   cat <<'EOF'
 Usage:
-  cs codex SANDBOX[/WORKLOAD] [SSH_ALIAS] [options]
-  cs codex open SANDBOX[/WORKLOAD] [SSH_ALIAS] [options]
+  cs codex-open SANDBOX[/WORKLOAD] [SSH_ALIAS] [options]
+  cs codex-open open SANDBOX[/WORKLOAD] [SSH_ALIAS] [options]
 
 Open a manually-created Crafting sandbox in Codex Desktop.
 
@@ -23,17 +23,18 @@ Options:
   --remote-user USER        Remote SSH user. Default: owner.
   --project-dir DIR         Remote project folder. Default: /home/owner.
   --secret-path PATH        Preferred remote OpenAI API key secret path.
-  --install-codex           Fallback: install Node.js, npm, and @openai/codex if needed.
+  --install-codex           Install Node.js, npm, and @openai/codex if needed. Default.
+  --no-install-codex        Do not install remote Codex if it is missing.
   --skip-login              Do not try to log remote Codex in.
   --no-open                 Prepare the remote but do not launch Codex Desktop.
   --app-path PATH           Local path to open with Codex Desktop. Default: .
   -h, --help                Show this help.
 
 Examples:
-  cs codex demo/app
-  cs codex demo/app codex-demo
-  cs codex demo --workload web --project-dir /home/owner/repo
-  cs codex lab/codex-demo --workload app --alias codex-demo
+  cs codex-open demo/app
+  cs codex-open demo/app codex-demo
+  cs codex-open demo --workload web --project-dir /home/owner/repo
+  cs codex-open lab/codex-demo --workload app --alias codex-demo
 
 Notes:
   The extension creates/updates the SSH alias and verifies the remote Codex CLI.
@@ -43,7 +44,7 @@ EOF
 }
 
 die() {
-  printf 'cs codex: %s\n' "$*" >&2
+  printf 'cs codex-open: %s\n' "$*" >&2
   exit 1
 }
 
@@ -83,7 +84,7 @@ remote_user=""
 project_dir=""
 secret_path=""
 skip_login=0
-install_codex=0
+install_codex=1
 should_open=1
 app_path="."
 
@@ -125,6 +126,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --install-codex)
       install_codex=1
+      shift
+      ;;
+    --no-install-codex)
+      install_codex=0
       shift
       ;;
     --skip-login)
@@ -197,6 +202,8 @@ if [[ "$skip_login" == "1" ]]; then
 fi
 if [[ "$install_codex" == "1" ]]; then
   env_args+=("CODEX_CRAFTING_INSTALL_CODEX=1")
+else
+  env_args+=("CODEX_CRAFTING_INSTALL_CODEX=0")
 fi
 
 setup_args=("$sandbox_name")

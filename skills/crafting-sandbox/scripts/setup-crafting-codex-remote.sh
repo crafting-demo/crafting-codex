@@ -70,6 +70,18 @@ extract_host() {
   '
 }
 
+normalize_host() {
+  local host="$1"
+  local suffix=".crafting.sandboxes.site"
+
+  host="$(printf '%s' "$host" | tr -d '\r' | awk 'NF { print $1; exit }')"
+  if [[ "$host" == *"${suffix}"* ]]; then
+    host="${host%%${suffix}*}${suffix}"
+  fi
+
+  printf '%s' "$host"
+}
+
 resolve_crafting_state_dir() {
   local candidates=(
     "${CRAFTING_SANDBOX_STATE_DIR:-}"
@@ -178,27 +190,6 @@ install_codex_remote() {
   remote "$alias_name" 'sudo apt-get update && sudo apt-get install -y nodejs npm && sudo npm install -g @openai/codex'
 }
 
-install_codex_shim_remote() {
-  local alias_name="$1"
-  echo "Using Crafting-provided 'cs codex'."
-  echo "Creating or updating a lightweight ~/.local/bin/codex shim that delegates to 'cs codex'..."
-  remote "$alias_name" 'command -v cs >/dev/null 2>&1 && cs codex --version >/dev/null && cs codex app-server --help >/dev/null && mkdir -p "$HOME/.local/bin" && cat > "$HOME/.local/bin/codex" <<'"'"'EOF'"'"'
-#!/usr/bin/env sh
-exec cs codex "$@"
-EOF
-chmod +x "$HOME/.local/bin/codex"
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *)
-    touch "$HOME/.profile" "$HOME/.bashrc"
-    grep -F "export PATH=\"\$HOME/.local/bin:\$PATH\"" "$HOME/.profile" >/dev/null 2>&1 || printf "\n# Added by Crafting Codex setup.\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.profile"
-    grep -F "export PATH=\"\$HOME/.local/bin:\$PATH\"" "$HOME/.bashrc" >/dev/null 2>&1 || printf "\n# Added by Crafting Codex setup.\nexport PATH=\"\$HOME/.local/bin:\$PATH\"\n" >> "$HOME/.bashrc"
-    ;;
-esac
-"$HOME/.local/bin/codex" --version >/dev/null
-"$HOME/.local/bin/codex" app-server --help >/dev/null'
-}
-
 login_remote_codex() {
   local alias_name="$1"
   local preferred_secret_path="$2"
@@ -211,13 +202,13 @@ login_remote_codex() {
 
   if remote "$alias_name" 'test -n "${OPENAI_API_KEY:-}"'; then
     echo "Logging remote Codex in from remote OPENAI_API_KEY. The key will not be printed."
-    remote "$alias_name" 'printenv OPENAI_API_KEY | codex login --with-api-key'
+    remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; printenv OPENAI_API_KEY | codex login --with-api-key'
     return 0
   fi
 
   if remote "$alias_name" 'test -n "${CODEX_ACCESS_TOKEN:-}"'; then
     echo "Logging remote Codex in from remote CODEX_ACCESS_TOKEN. The token will not be printed."
-    remote "$alias_name" 'printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'
+    remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; printenv CODEX_ACCESS_TOKEN | codex login --with-access-token'
     return 0
   fi
 
@@ -227,7 +218,7 @@ login_remote_codex() {
 
   if [[ -n "$detected_secret_path" ]]; then
     echo "Logging remote Codex in with API key secret at ${detected_secret_path}. The key will not be printed."
-    remote "$alias_name" "cat '$detected_secret_path' | codex login --with-api-key"
+    remote "$alias_name" "PATH=\"\$HOME/.local/bin:\$PATH\"; cat '$detected_secret_path' | codex login --with-api-key"
     return 0
   fi
 
@@ -279,9 +270,15 @@ main() {
     echo "Could not parse host for workload '${workload}' from cs sb show."
     host_name="$(prompt "Paste workload SSH host" "")"
   fi
+  host_name="$(normalize_host "$host_name")"
 
   if [[ -z "$host_name" ]]; then
     echo "No SSH host provided; stopping." >&2
+    exit 1
+  fi
+
+  if [[ "$host_name" != *".crafting.sandboxes.site" ]]; then
+    echo "Parsed SSH host does not look like a Crafting sandbox host: ${host_name}" >&2
     exit 1
   fi
 
@@ -292,16 +289,13 @@ main() {
   remote "$alias_name" 'whoami; hostname; pwd'
 
   echo "Checking remote Codex CLI..."
-  if remote "$alias_name" 'command -v cs >/dev/null 2>&1 && cs codex --version >/dev/null 2>&1 && cs codex app-server --help >/dev/null 2>&1'; then
-    install_codex_shim_remote "$alias_name"
-  elif remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; command -v codex >/dev/null 2>&1'; then
-    :
-  else
+  remote "$alias_name" 'if [ -f "$HOME/.local/bin/codex" ] && grep -q "exec cs codex" "$HOME/.local/bin/codex"; then rm -f "$HOME/.local/bin/codex"; fi'
+  if ! remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; command -v codex >/dev/null 2>&1'; then
     echo "No working remote Codex entrypoint was found."
-    if [[ "${CODEX_CRAFTING_INSTALL_CODEX:-}" == "1" ]]; then
+    if [[ "${CODEX_CRAFTING_INSTALL_CODEX:-1}" == "1" ]]; then
       install_codex_remote "$alias_name"
     elif [[ -t 0 ]]; then
-      read -r -p "Crafting-provided 'cs codex' was not found. Install Node.js, npm, and @openai/codex now? [y/N]: " should_install
+      read -r -p "Install Node.js, npm, and @openai/codex now? [y/N]: " should_install
       case "$should_install" in
         y|Y|yes|YES) install_codex_remote "$alias_name" ;;
         *)
@@ -310,7 +304,7 @@ main() {
           ;;
       esac
     else
-      echo "Set CODEX_CRAFTING_INSTALL_CODEX=1 or pass --install-codex to install it noninteractively."
+      echo "Remote Codex install was disabled by CODEX_CRAFTING_INSTALL_CODEX=0."
       exit 1
     fi
   fi
@@ -320,10 +314,10 @@ main() {
   login_remote_codex "$alias_name" "$secret_path"
 
   echo "Remote login status:"
-  remote "$alias_name" 'codex login status || true'
+  remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; codex login status || true'
 
   echo "Running Codex doctor..."
-  remote "$alias_name" 'codex doctor --summary --ascii || true'
+  remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; codex doctor --summary --ascii || true'
 
   echo
   echo "Done. SSH and remote Codex are ready."
