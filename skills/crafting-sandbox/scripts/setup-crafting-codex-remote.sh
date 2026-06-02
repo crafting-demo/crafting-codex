@@ -32,6 +32,22 @@ require_cmd() {
   fi
 }
 
+ensure_org_selected() {
+  local org="$1"
+  local host_name="$2"
+
+  if [[ -n "$host_name" || -n "${CODEX_CRAFTING_SSH_HOST:-}" ]]; then
+    return 0
+  fi
+  if [[ -n "$org" || -n "${CODEX_CRAFTING_ORG:-}" || -n "${CRAFTING_SANDBOX_ORG:-}" ]]; then
+    return 0
+  fi
+
+  # Run a foreground command before any piped lookups so `cs` can prompt for
+  # the org once and persist the selected context.
+  cs sb list >/dev/null
+}
+
 extract_host() {
   local sandbox_name="$1"
   local workload="$2"
@@ -299,6 +315,7 @@ main() {
   secret_path="${CODEX_CRAFTING_SECRET_PATH:-$default_secret_path}"
   host_name="${CODEX_CRAFTING_SSH_HOST:-}"
   org="${CODEX_CRAFTING_ORG:-$default_org}"
+  ensure_org_selected "$org" "$host_name"
   split_sandbox_name "$sandbox_name" folder bare_sandbox_name
 
   echo "Sandbox:       ${sandbox_name}"

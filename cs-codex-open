@@ -54,6 +54,19 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
+ensure_org_selected() {
+  if [[ -n "$ssh_host" || -n "${CODEX_CRAFTING_SSH_HOST:-}" ]]; then
+    return 0
+  fi
+  if [[ -n "$org" || -n "${CODEX_CRAFTING_ORG:-}" || -n "${CRAFTING_SANDBOX_ORG:-}" ]]; then
+    return 0
+  fi
+
+  # Run a foreground command before any piped lookups so `cs` can prompt for
+  # the org once and persist the selected context.
+  cs sb list >/dev/null
+}
+
 sandbox_exists() {
   local target="$1"
   local target_folder=""
@@ -198,11 +211,15 @@ done
 }
 [[ -x "$setup_script" ]] || die "setup script is not executable: ${setup_script}"
 
+require_cmd cs
+require_cmd ssh
+ensure_org_selected
+
 sandbox_name="$sandbox_target"
 if [[ "$sandbox_target" == */* && -z "$workload" ]]; then
   if sandbox_exists "$sandbox_target"; then
     sandbox_name="$sandbox_target"
-  elif [[ "${sandbox_target%/*}" == */* ]] && sandbox_exists "${sandbox_target%/*}"; then
+  elif sandbox_exists "${sandbox_target%/*}"; then
     sandbox_name="${sandbox_target%/*}"
     workload="${sandbox_target##*/}"
   else
@@ -210,9 +227,6 @@ if [[ "$sandbox_target" == */* && -z "$workload" ]]; then
     workload="${sandbox_target##*/}"
   fi
 fi
-
-require_cmd cs
-require_cmd ssh
 
 env_args=()
 if [[ -n "$workload" ]]; then
