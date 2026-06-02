@@ -11,19 +11,22 @@ It teaches Codex how to:
 - Execute commands inside sandbox workloads.
 - Connect a Crafting sandbox as a Codex App SSH remote environment.
 
-## Install
+## Install / Use With Codex
 
-Copy or symlink the skill directory into your Codex skills folder:
+Open Codex and type:
+
+```text
+Use this repo to set up a new sandbox called codex-sandbox with an empty workspace:
+https://github.com/crafting-demo/crafting-codex
+```
+
+Codex should fetch this repo, read `skills/crafting-sandbox/SKILL.md`, use the bundled setup script, create the Crafting sandbox, and connect it as a Codex App SSH remote environment.
+
+For a manual local install, copy or symlink the skill directory into your Codex skills folder:
 
 ```bash
 mkdir -p ~/.codex/skills
 cp -R skills/crafting-sandbox ~/.codex/skills/
-```
-
-Then start a new Codex thread. Codex should discover the skill from:
-
-```text
-~/.codex/skills/crafting-sandbox/SKILL.md
 ```
 
 ## Prerequisites
