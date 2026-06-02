@@ -20,7 +20,19 @@ Use this repo to set up a new sandbox called codex-sandbox with an empty workspa
 https://github.com/crafting-demo/crafting-codex
 ```
 
-Codex should fetch this repo, read `skills/crafting-sandbox/SKILL.md`, use the bundled setup script, create the Crafting sandbox, and connect it as a Codex App SSH remote environment.
+Codex should fetch this repo, read `skills/crafting-sandbox/SKILL.md`, use the bundled setup script, create the Crafting sandbox, and prepare it for use as a Codex App SSH remote environment.
+
+The setup script writes a working SSH alias and verifies the remote Codex CLI, but Codex App may not automatically show newly written SSH aliases. If the connection does not appear in **Settings -> Connections -> SSH**, add it manually:
+
+```text
+Settings -> Connections -> SSH -> Add
+Display name: codex-sandbox
+Target mode: Alias
+Alias: codex-sandbox
+Auth mode: No Auth
+```
+
+Then enable the connection and choose `/home/owner` as the project folder.
 
 For a manual local install, copy or symlink the skill directory into your Codex skills folder:
 
@@ -85,6 +97,8 @@ The script:
 5. Offers to install Node.js, npm, and `@openai/codex` when missing.
 6. Logs remote Codex in from `OPENAI_API_KEY`, `CODEX_ACCESS_TOKEN`, or common Crafting secret paths.
 7. Runs `codex doctor --summary --ascii`.
+
+The script does not write Codex App's private local UI storage. The final connection registration, enable toggle, and project-folder selection happen in Codex App.
 
 ## API Key Secret Paths
 

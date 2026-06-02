@@ -119,9 +119,20 @@ When the user asks for a new Codex thread or local Codex App remote environment:
 1. Create or identify the sandbox.
 2. Run the remote setup script.
 3. Tell the user the SSH alias and suggested remote project folder, usually `/home/owner`.
-4. Ask the user to refresh/toggle the SSH entry in **Codex App -> Settings -> Connections -> SSH** and choose the remote project folder.
+4. Tell the user to open **Codex App -> Settings -> Connections -> SSH**. If the alias is already visible, enable it and choose the remote project folder.
+5. If the alias is not visible, tell the user to add it manually:
 
-The script can automate SSH config and remote readiness. The Codex App UI currently owns the final enable/select-folder action.
+   ```text
+   Settings -> Connections -> SSH -> Add
+   Display name: SSH_ALIAS
+   Target mode: Alias
+   Alias: SSH_ALIAS
+   Auth mode: No Auth
+   ```
+
+   Then enable the connection and choose the remote project folder.
+
+The script can automate SSH config and remote readiness. The Codex App UI currently owns the final connection registration, enable, and project-folder selection actions. Do not claim the sandbox is visible in the Codex UI unless it has been manually verified.
 
 ## References
 

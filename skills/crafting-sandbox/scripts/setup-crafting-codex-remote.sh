@@ -241,8 +241,18 @@ main() {
   remote "$alias_name" 'codex doctor --summary --ascii || true'
 
   echo
-  echo "Done. In Codex App, open Settings -> Connections -> SSH, refresh/toggle '${alias_name}',"
-  echo "then choose the remote project folder: ${project_dir}"
+  echo "Done. SSH and remote Codex are ready."
+  echo
+  echo "Codex App does not always auto-discover newly written SSH aliases."
+  echo "If '${alias_name}' is not visible in Settings -> Connections -> SSH, add it manually:"
+  echo
+  echo "  Settings -> Connections -> SSH -> Add"
+  echo "  Display name: ${alias_name}"
+  echo "  Target mode:  Alias"
+  echo "  Alias:        ${alias_name}"
+  echo "  Auth mode:    No Auth"
+  echo
+  echo "Then enable the connection and choose the remote project folder: ${project_dir}"
 }
 
 main "$@"
