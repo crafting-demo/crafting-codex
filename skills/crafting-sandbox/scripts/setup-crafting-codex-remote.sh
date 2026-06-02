@@ -55,19 +55,22 @@ extract_host() {
   local folder="$4"
   local bare_name="$5"
   local args=()
+  local output
 
   if [[ -n "$org" ]]; then
     args+=("-O" "$org")
   fi
+
   if [[ -n "$folder" ]]; then
-    args+=("--folder" "$folder")
+    output="$(
+      NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" --folder "$folder" sb show "$bare_name" 2>&1 || true
+      NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "${folder}/${bare_name}" 2>&1 || true
+    )"
+  else
+    output="$(NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "$bare_name" 2>&1 || true)"
   fi
 
-  if [[ "${#args[@]}" -gt 0 ]]; then
-    NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "$bare_name" 2>&1
-  else
-    NO_COLOR=1 CLICOLOR=0 cs sb show "$bare_name" 2>&1
-  fi | awk -v workload="$workload" '
+  printf '%s\n' "$output" | awk -v workload="$workload" '
     {
       gsub(/\033\[[0-9;]*[[:alpha:]]/, "")
       gsub(/[^A-Za-z0-9._@-]+/, " ")
