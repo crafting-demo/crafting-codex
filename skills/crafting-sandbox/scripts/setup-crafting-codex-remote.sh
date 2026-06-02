@@ -8,6 +8,10 @@ default_secret_path="${CODEX_CRAFTING_SECRET_PATH:-/run/sandbox/fs/secrets/share
 default_org="${CODEX_CRAFTING_ORG:-}"
 ssh_config="${HOME}/.ssh/config"
 
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 prompt() {
   local label="$1"
   local default_value="$2"
@@ -47,10 +51,41 @@ extract_host() {
     NO_COLOR=1 cs "${args[@]}" sb show "$bare_name" 2>&1
   else
     NO_COLOR=1 cs sb show "$bare_name" 2>&1
-  fi | awk -v workload="$workload" '{
-    gsub(/\033\[[0-9;]*[[:alpha:]]/, "")
-    if ($1 == workload) { print $2; exit }
-  }'
+  fi | awk -v workload="$workload" '
+    {
+      gsub(/\033\[[0-9;]*[[:alpha:]]/, "")
+    }
+    /^WORKLOAD[[:space:]]+SSH-ADDRESSES/ {
+      in_ssh_addresses = 1
+      next
+    }
+    in_ssh_addresses && NF == 0 {
+      in_ssh_addresses = 0
+      next
+    }
+    in_ssh_addresses && $1 == workload {
+      print $2
+      exit
+    }
+  '
+}
+
+resolve_crafting_state_dir() {
+  local candidates=(
+    "${CRAFTING_SANDBOX_STATE_DIR:-}"
+    "${XDG_CONFIG_HOME:-$HOME/.config}/crafting/sandbox"
+    "$HOME/.crafting/sandbox"
+  )
+  local candidate
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -n "$candidate" && -r "${candidate}/id_client" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+
+  printf '%s' "${candidates[1]}"
 }
 
 default_alias_for_sandbox() {
@@ -84,8 +119,23 @@ write_ssh_alias() {
   local alias_name="$1"
   local host_name="$2"
   local remote_user="$3"
-  local tmp
+  local tmp cs_bin state_dir identity_file known_hosts_file proxy_command
   tmp="$(mktemp)"
+  cs_bin="${CODEX_CRAFTING_CS_BIN:-$(command -v cs)}"
+  state_dir="$(resolve_crafting_state_dir)"
+  identity_file="${CODEX_CRAFTING_IDENTITY_FILE:-${state_dir}/id_client}"
+  known_hosts_file="${CODEX_CRAFTING_KNOWN_HOSTS_FILE:-${state_dir}/known_hosts}"
+  proxy_command="$(shell_quote "$cs_bin") ssh-proxy %h:443"
+
+  if [[ ! -r "$identity_file" ]]; then
+    echo "Could not find Crafting SSH identity file at ${identity_file}." >&2
+    echo "Run 'cs info' or connect to a workspace once so Crafting can create it." >&2
+    exit 1
+  fi
+
+  if [[ ! -e "$known_hosts_file" ]]; then
+    known_hosts_file="${HOME}/.ssh/known_hosts"
+  fi
 
   mkdir -p "$HOME/.ssh"
   touch "$ssh_config"
@@ -104,11 +154,11 @@ Host ${alias_name}
   HostName ${host_name}
   Port 22
   User ${remote_user}
-  ProxyCommand ${HOME}/.crafting/sandbox/cli/current/bin/cs ssh-proxy %h:443
-  UserKnownHostsFile ${HOME}/.crafting/sandbox/known_hosts
-  StrictHostKeyChecking yes
+  ProxyCommand ${proxy_command}
+  UserKnownHostsFile ${known_hosts_file}
+  StrictHostKeyChecking accept-new
   HashKnownHosts no
-  IdentityFile ${HOME}/.crafting/sandbox/id_client
+  IdentityFile ${identity_file}
 # <<< codex-crafting-remote ${alias_name}
 EOF
 
@@ -223,11 +273,21 @@ main() {
   echo "Checking remote Codex CLI..."
   if ! remote "$alias_name" 'command -v codex >/dev/null 2>&1'; then
     echo "Remote codex command was not found."
-    read -r -p "Install Node.js, npm, and @openai/codex now? [y/N]: " should_install
-    case "$should_install" in
-      y|Y|yes|YES) install_codex_remote "$alias_name" ;;
-      *) echo "Skipping install. Codex App will not work until remote codex is on PATH." ;;
-    esac
+    if [[ "${CODEX_CRAFTING_INSTALL_CODEX:-}" == "1" ]]; then
+      install_codex_remote "$alias_name"
+    elif [[ -t 0 ]]; then
+      read -r -p "Install Node.js, npm, and @openai/codex now? [y/N]: " should_install
+      case "$should_install" in
+        y|Y|yes|YES) install_codex_remote "$alias_name" ;;
+        *)
+          echo "Skipping install. Codex App will not work until remote codex is on PATH."
+          exit 1
+          ;;
+      esac
+    else
+      echo "Set CODEX_CRAFTING_INSTALL_CODEX=1 or pass --install-codex to install it noninteractively."
+      exit 1
+    fi
   fi
 
   remote "$alias_name" 'command -v codex && codex --version && codex app-server --help >/dev/null && echo app-server-ok'

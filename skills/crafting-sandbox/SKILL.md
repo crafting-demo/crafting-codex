@@ -82,6 +82,7 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
 
    ```bash
    cs codex SANDBOX_NAME/WORKLOAD [SSH_ALIAS]
+   cs codex SANDBOX_NAME/WORKLOAD --install-codex
    ```
 
    If the org must be explicit:
@@ -92,6 +93,7 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    ```
 
    The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
+   Pass `--install-codex` when a fresh workspace does not already have remote `codex` on `PATH`.
    The `cs codex` wrapper then opens Codex Desktop with `codex app`.
 
 ## Remote Codex Auth

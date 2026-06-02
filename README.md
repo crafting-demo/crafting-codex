@@ -57,6 +57,7 @@ Then open a manually-created sandbox/workspace in Codex:
 cs codex SANDBOX/WORKLOAD
 cs codex SANDBOX/WORKLOAD SSH_ALIAS
 cs codex SANDBOX --workload WORKLOAD --project-dir /home/owner
+cs codex SANDBOX/WORKLOAD --install-codex
 ```
 
 Examples:
@@ -72,7 +73,8 @@ The extension:
 1. Reuses `skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh`.
 2. Creates or updates a concrete SSH alias in `~/.ssh/config`.
 3. Verifies SSH and remote `codex app-server` readiness.
-4. Opens Codex Desktop with `codex app`.
+4. Optionally installs remote Node.js, npm, and `@openai/codex` with `--install-codex`.
+5. Opens Codex Desktop with `codex app`.
 
 Codex Desktop still owns the supported final registration step. If the SSH alias does not appear automatically, open **Settings -> Connections -> SSH**, add or enable the alias, and choose the remote project folder.
 
