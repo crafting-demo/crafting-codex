@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+setup_script="${script_dir}/skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cs codex SANDBOX[/WORKLOAD] [SSH_ALIAS] [options]
+  cs codex open SANDBOX[/WORKLOAD] [SSH_ALIAS] [options]
+
+Open a manually-created Crafting sandbox in Codex Desktop.
+
+Arguments:
+  SANDBOX[/WORKLOAD]  Sandbox name, optionally followed by workload/workspace.
+                      If WORKLOAD is omitted, "app" is used.
+  SSH_ALIAS           Optional SSH alias to write into ~/.ssh/config.
+
+Options:
+  -W, --workload NAME       Workload/workspace name. Overrides /WORKLOAD.
+  -O, --org NAME            Crafting org to pass to cs.
+  --remote-user USER        Remote SSH user. Default: owner.
+  --project-dir DIR         Remote project folder. Default: /home/owner.
+  --secret-path PATH        Preferred remote OpenAI API key secret path.
+  --skip-login              Do not try to log remote Codex in.
+  --no-open                 Prepare the remote but do not launch Codex Desktop.
+  --app-path PATH           Local path to open with Codex Desktop. Default: .
+  -h, --help                Show this help.
+
+Examples:
+  cs codex demo/app
+  cs codex demo/app codex-demo
+  cs codex demo --workload web --project-dir /home/owner/repo
+  cs codex lab/codex-demo --workload app --alias codex-demo
+
+Notes:
+  The extension creates/updates the SSH alias and verifies the remote Codex CLI.
+  Codex Desktop may still require you to enable the SSH connection under
+  Settings -> Connections -> SSH and choose the remote project folder.
+EOF
+}
+
+die() {
+  printf 'cs codex: %s\n' "$*" >&2
+  exit 1
+}
+
+require_cmd() {
+  command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
+}
+
+open_codex() {
+  local app_path="$1"
+
+  if command -v codex >/dev/null 2>&1; then
+    codex app "$app_path"
+    return 0
+  fi
+
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    open -a Codex "$app_path"
+    return 0
+  fi
+
+  die "could not find 'codex' on PATH; install Codex CLI or open Codex Desktop manually"
+}
+
+command_name="open"
+if [[ "${1:-}" == "open" ]]; then
+  shift
+elif [[ "${1:-}" == "help" ]]; then
+  usage
+  exit 0
+fi
+
+sandbox_target=""
+alias_name=""
+workload=""
+org=""
+remote_user=""
+project_dir=""
+secret_path=""
+skip_login=0
+should_open=1
+app_path="."
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    -W|--workload)
+      [[ $# -ge 2 ]] || die "--workload requires a value"
+      workload="$2"
+      shift 2
+      ;;
+    -O|--org)
+      [[ $# -ge 2 ]] || die "--org requires a value"
+      org="$2"
+      shift 2
+      ;;
+    --alias)
+      [[ $# -ge 2 ]] || die "--alias requires a value"
+      alias_name="$2"
+      shift 2
+      ;;
+    --remote-user)
+      [[ $# -ge 2 ]] || die "--remote-user requires a value"
+      remote_user="$2"
+      shift 2
+      ;;
+    --project-dir)
+      [[ $# -ge 2 ]] || die "--project-dir requires a value"
+      project_dir="$2"
+      shift 2
+      ;;
+    --secret-path)
+      [[ $# -ge 2 ]] || die "--secret-path requires a value"
+      secret_path="$2"
+      shift 2
+      ;;
+    --skip-login)
+      skip_login=1
+      shift
+      ;;
+    --no-open)
+      should_open=0
+      shift
+      ;;
+    --app-path)
+      [[ $# -ge 2 ]] || die "--app-path requires a value"
+      app_path="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      die "unknown option: $1"
+      ;;
+    *)
+      if [[ -z "$sandbox_target" ]]; then
+        sandbox_target="$1"
+      elif [[ -z "$alias_name" ]]; then
+        alias_name="$1"
+      else
+        die "unexpected argument: $1"
+      fi
+      shift
+      ;;
+  esac
+done
+
+[[ "$command_name" == "open" ]] || die "unsupported command: ${command_name}"
+[[ -n "$sandbox_target" ]] || {
+  usage >&2
+  exit 2
+}
+[[ -x "$setup_script" ]] || die "setup script is not executable: ${setup_script}"
+
+sandbox_name="$sandbox_target"
+if [[ "$sandbox_target" == */* && -z "$workload" ]]; then
+  sandbox_name="${sandbox_target%/*}"
+  workload="${sandbox_target##*/}"
+fi
+
+require_cmd cs
+require_cmd ssh
+
+env_args=()
+if [[ -n "$workload" ]]; then
+  env_args+=("CODEX_CRAFTING_WORKLOAD=${workload}")
+fi
+if [[ -n "$org" ]]; then
+  env_args+=("CODEX_CRAFTING_ORG=${org}")
+fi
+if [[ -n "$remote_user" ]]; then
+  env_args+=("CODEX_CRAFTING_REMOTE_USER=${remote_user}")
+fi
+if [[ -n "$project_dir" ]]; then
+  env_args+=("CODEX_CRAFTING_PROJECT_DIR=${project_dir}")
+fi
+if [[ -n "$secret_path" ]]; then
+  env_args+=("CODEX_CRAFTING_SECRET_PATH=${secret_path}")
+fi
+if [[ "$skip_login" == "1" ]]; then
+  env_args+=("CODEX_CRAFTING_SKIP_LOGIN=1")
+fi
+
+setup_args=("$sandbox_name")
+if [[ -n "$alias_name" ]]; then
+  setup_args+=("$alias_name")
+fi
+
+env "${env_args[@]}" "$setup_script" "${setup_args[@]}"
+
+if [[ "$should_open" == "1" ]]; then
+  open_codex "$app_path"
+fi
