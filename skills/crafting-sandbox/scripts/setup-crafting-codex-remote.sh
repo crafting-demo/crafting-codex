@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-default_workload="app"
+default_workload="${CODEX_CRAFTING_DEFAULT_WORKLOAD:-}"
 default_remote_user="${CODEX_CRAFTING_REMOTE_USER:-owner}"
-default_project_dir="${CODEX_CRAFTING_PROJECT_DIR:-/home/owner}"
-default_secret_path="${CODEX_CRAFTING_SECRET_PATH:-/run/sandbox/fs/secrets/shared/shared/openai-key}"
+default_project_dir="${CODEX_CRAFTING_PROJECT_DIR:-}"
+default_secret_path="${CODEX_CRAFTING_SECRET_PATH:-}"
 default_org="${CODEX_CRAFTING_ORG:-}"
 ssh_config="${HOME}/.ssh/config"
 
@@ -48,40 +48,45 @@ extract_host() {
   fi
 
   if [[ "${#args[@]}" -gt 0 ]]; then
-    NO_COLOR=1 cs "${args[@]}" sb show "$bare_name" 2>&1
+    NO_COLOR=1 CLICOLOR=0 cs "${args[@]}" sb show "$bare_name" 2>&1
   else
-    NO_COLOR=1 cs sb show "$bare_name" 2>&1
+    NO_COLOR=1 CLICOLOR=0 cs sb show "$bare_name" 2>&1
   fi | awk -v workload="$workload" '
     {
       gsub(/\033\[[0-9;]*[[:alpha:]]/, "")
-    }
-    /^WORKLOAD[[:space:]]+SSH-ADDRESSES/ {
-      in_ssh_addresses = 1
-      next
-    }
-    in_ssh_addresses && NF == 0 {
-      in_ssh_addresses = 0
-      next
-    }
-    in_ssh_addresses {
+      gsub(/[^A-Za-z0-9._@-]+/, " ")
       for (i = 1; i <= NF; i++) {
-        if ($i ~ /^[A-Za-z0-9._-]+$/ && index($i, ".") > 0) {
-          if ($1 == workload || $i ~ "^" workload "--") {
-            print $i
-            exit
-          }
-          if (fallback == "") {
-            fallback = $i
-          }
+        token = $i
+        sub(/^.*@/, "", token)
+        sub(/^[<(]+/, "", token)
+        sub(/[>.)]+$/, "", token)
+        if (token !~ /^[A-Za-z0-9][A-Za-z0-9._-]*--[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9._-]+$/) {
+          continue
+        }
+        token_workload = token
+        sub(/--.*/, "", token_workload)
+        if (workload != "" && token_workload == workload) {
+          print token
+          exit
+        }
+        if (fallback == "") {
+          fallback = token
         }
       }
     }
     END {
-      if (fallback != "") {
+      if (workload == "" && fallback != "") {
         print fallback
       }
     }
   '
+}
+
+infer_workload_from_host() {
+  local host="$1"
+  if [[ "$host" == *--* ]]; then
+    printf '%s' "${host%%--*}"
+  fi
 }
 
 normalize_host() {
@@ -278,7 +283,7 @@ main() {
   local sandbox_name alias_name workload remote_user project_dir secret_path host_name default_alias org folder bare_sandbox_name alias_was_default
   sandbox_name="${1:-}"
   if [[ -z "$sandbox_name" ]]; then
-    sandbox_name="$(prompt "Crafting sandbox name, e.g. FOLDER/codex-demo" "")"
+    sandbox_name="$(prompt "Crafting sandbox name, e.g. FOLDER/SANDBOX" "")"
   fi
 
   default_alias="${CODEX_CRAFTING_ALIAS:-$(default_alias_for_sandbox "$sandbox_name")}"
@@ -292,6 +297,7 @@ main() {
   remote_user="${CODEX_CRAFTING_REMOTE_USER:-$default_remote_user}"
   project_dir="${CODEX_CRAFTING_PROJECT_DIR:-$default_project_dir}"
   secret_path="${CODEX_CRAFTING_SECRET_PATH:-$default_secret_path}"
+  host_name="${CODEX_CRAFTING_SSH_HOST:-}"
   org="${CODEX_CRAFTING_ORG:-$default_org}"
   split_sandbox_name "$sandbox_name" folder bare_sandbox_name
 
@@ -303,16 +309,28 @@ main() {
     echo "Folder:        ${folder}"
   fi
   echo "SSH alias:     ${alias_name}"
-  echo "Workload:      ${workload}"
+  if [[ -n "$workload" ]]; then
+    echo "Workload:      ${workload}"
+  else
+    echo "Workload:      (auto-detect)"
+  fi
   echo "Remote user:   ${remote_user}"
-  echo "Project dir:   ${project_dir}"
+  if [[ -n "$project_dir" ]]; then
+    echo "Project dir:   ${project_dir}"
+  else
+    echo "Project dir:   (remote default)"
+  fi
 
   echo
-  echo "Looking up workload SSH host..."
-  host_name="$(extract_host "$sandbox_name" "$workload" "$org" "$folder" "$bare_sandbox_name" || true)"
-  if [[ -z "$host_name" && "$sandbox_name" != */* && "$workload" != "$default_workload" ]]; then
+  if [[ -n "$host_name" ]]; then
+    echo "Using provided workload SSH host."
+  else
+    echo "Looking up workload SSH host..."
+    host_name="$(extract_host "$sandbox_name" "$workload" "$org" "$folder" "$bare_sandbox_name" || true)"
+  fi
+  if [[ -z "$host_name" && "$sandbox_name" != */* && -n "$workload" && "$workload" != "$default_workload" ]]; then
     echo "No host found for sandbox '${sandbox_name}' workload '${workload}'."
-    echo "Trying folder-scoped sandbox '${sandbox_name}/${workload}' workload '${default_workload}'..."
+    echo "Trying folder-scoped sandbox '${sandbox_name}/${workload}' with auto-detected workload..."
     host_name="$(extract_host "${sandbox_name}/${workload}" "$default_workload" "$org" "$sandbox_name" "$workload" || true)"
     if [[ -n "$host_name" ]]; then
       folder="$sandbox_name"
@@ -322,18 +340,22 @@ main() {
       if [[ "$alias_was_default" == "1" ]]; then
         alias_name="$(default_alias_for_sandbox "$sandbox_name")"
       fi
-      echo "Resolved as sandbox '${sandbox_name}' workload '${workload}'."
+      echo "Resolved as sandbox '${sandbox_name}'."
       echo "SSH alias:     ${alias_name}"
     fi
   fi
-  if [[ -z "$host_name" ]]; then
-    echo "Could not parse host for workload '${workload}' from cs sb show."
-    host_name="$(prompt "Paste workload SSH host" "")"
-  fi
   host_name="$(normalize_host "$host_name")"
+  if [[ -z "$workload" ]]; then
+    workload="$(infer_workload_from_host "$host_name")"
+    if [[ -n "$workload" ]]; then
+      echo "Detected workload '${workload}'."
+    fi
+  fi
 
   if [[ -z "$host_name" ]]; then
-    echo "No SSH host provided; stopping." >&2
+    echo "Could not determine the workload SSH host from 'cs sb show'." >&2
+    echo "Check that the sandbox is running and that the requested workload exposes an SSH address." >&2
+    echo "If needed, rerun with CODEX_CRAFTING_SSH_HOST or --ssh-host to provide an explicit override." >&2
     exit 1
   fi
 
@@ -342,6 +364,10 @@ main() {
 
   echo "Verifying SSH..."
   remote "$alias_name" 'whoami; hostname; pwd'
+  if [[ -z "$project_dir" ]]; then
+    project_dir="$(remote "$alias_name" 'pwd' | awk 'NF { print $1; exit }')"
+    echo "Detected project dir: ${project_dir}"
+  fi
 
   echo "Checking remote Codex CLI..."
   remote "$alias_name" 'if [ -f "$HOME/.local/bin/codex" ] && grep -q "exec cs codex" "$HOME/.local/bin/codex"; then rm -f "$HOME/.local/bin/codex"; fi'

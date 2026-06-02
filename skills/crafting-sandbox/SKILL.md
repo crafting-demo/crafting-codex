@@ -64,9 +64,9 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
 5. Execute commands in a workload:
 
    ```bash
-   cs exec -W SANDBOX_NAME/app -- pwd
-   cs exec -W SANDBOX_NAME/app -w /home/owner -- ls -la
-   cs ssh -W SANDBOX_NAME/app -- 'command -v node || true'
+   cs exec -W SANDBOX_NAME/WORKLOAD -- pwd
+   cs exec -W SANDBOX_NAME/WORKLOAD -w REMOTE_PROJECT_DIR -- ls -la
+   cs ssh -W SANDBOX_NAME/WORKLOAD -- 'command -v node || true'
    ```
 
    Prefer `cs exec` for simple noninteractive commands. Use `cs ssh` when you need behavior that matches the login shell or when testing the same SSH route the Codex App will use.
@@ -88,8 +88,8 @@ Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox 
    If the org must be explicit:
 
    ```bash
-   CODEX_CRAFTING_ORG=ORG scripts/setup-crafting-codex-remote.sh FOLDER/codex-demo codex-demo
-   CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/codex-demo --workload app --alias codex-demo
+   CODEX_CRAFTING_ORG=ORG scripts/setup-crafting-codex-remote.sh FOLDER/SANDBOX SSH_ALIAS
+   CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/SANDBOX --workload WORKLOAD --alias SSH_ALIAS
    ```
 
    The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
@@ -131,7 +131,7 @@ When the user asks for a new Codex thread or local Codex App remote environment:
 
 1. Create or identify the sandbox.
 2. Run `cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]` if the extension is installed, or run the remote setup script directly.
-3. Tell the user the SSH alias and suggested remote project folder, usually `/home/owner`.
+3. Tell the user the SSH alias and the remote project folder reported by the setup output.
 4. Tell the user to open **Codex App -> Settings -> Connections -> SSH**. If the alias is already visible, enable it and choose the remote project folder.
 5. If the alias is not visible, tell the user to add it manually:
 

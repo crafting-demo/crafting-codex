@@ -17,7 +17,7 @@ It teaches Codex how to:
 Open Codex and type:
 
 ```text
-Use this repo to set up a new sandbox called codex-sandbox with an empty workspace:
+Use this repo to set up a new sandbox with an empty workspace:
 https://github.com/crafting-demo/crafting-codex
 ```
 
@@ -27,13 +27,13 @@ The setup script writes a working SSH alias and verifies the remote Codex CLI, b
 
 ```text
 Settings -> Connections -> SSH -> Add
-Display name: codex-sandbox
+Display name: SSH_ALIAS
 Target mode: Alias
-Alias: codex-sandbox
+Alias: SSH_ALIAS
 Auth mode: No Auth
 ```
 
-Then enable the connection and choose `/home/owner` as the project folder.
+Then enable the connection and choose the remote project folder reported by the setup output.
 
 For a manual local install, copy or symlink the skill directory into your Codex skills folder:
 
@@ -64,16 +64,17 @@ such as `FOLDER/SANDBOX` are resolved before treating a slash as `SANDBOX/WORKLO
 ```bash
 cs codex-open SANDBOX/WORKLOAD
 cs codex-open SANDBOX/WORKLOAD SSH_ALIAS
-cs codex-open SANDBOX --workload WORKLOAD --project-dir /home/owner
+cs codex-open SANDBOX --workload WORKLOAD --project-dir REMOTE_PROJECT_DIR
+cs codex-open SANDBOX/WORKLOAD --ssh-host WORKLOAD_SSH_HOST
 cs codex-open SANDBOX/WORKLOAD --no-install-codex
 ```
 
 Examples:
 
 ```bash
-cs codex-open codex-demo/app
-cs codex-open codex-demo/app codex-demo
-CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/codex-demo --workload app --alias codex-demo
+cs codex-open SANDBOX/WORKLOAD
+cs codex-open SANDBOX/WORKLOAD SSH_ALIAS
+CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/SANDBOX --workload WORKLOAD --alias SSH_ALIAS
 ```
 
 The extension:
@@ -128,11 +129,11 @@ skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh SANDBOX_NAME [SSH
 Examples:
 
 ```bash
-skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh codex-demo
-CODEX_CRAFTING_ORG=ORG skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh FOLDER/codex-demo codex-demo
+skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh SANDBOX
+CODEX_CRAFTING_ORG=ORG skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh FOLDER/SANDBOX SSH_ALIAS
 ```
 
-Folder-scoped names like `FOLDER/codex-demo` are supported, but most Crafting sites do not require folder scoping.
+Folder-scoped names like `FOLDER/SANDBOX` are supported, but most Crafting sites do not require folder scoping.
 
 The script:
 
@@ -182,7 +183,7 @@ If you want Codex in the sandbox to use your ChatGPT/Codex account instead, use 
 ### Option 1: Device auth in the sandbox
 
 ```bash
-ssh codex-demo
+ssh SSH_ALIAS
 codex login --device-auth
 ```
 
@@ -193,7 +194,7 @@ Then open the printed link in your browser and sign in with the same ChatGPT acc
 If your local machine has `~/.codex/auth.json`, copy it to the sandbox:
 
 ```bash
-ssh codex-demo 'mkdir -p ~/.codex && cat > ~/.codex/auth.json' < ~/.codex/auth.json
+ssh SSH_ALIAS 'mkdir -p ~/.codex && cat > ~/.codex/auth.json' < ~/.codex/auth.json
 ```
 
 Treat `~/.codex/auth.json` like a password. It contains access tokens. Do not commit it, paste it into chat, or share it.
@@ -205,7 +206,7 @@ Your local Codex App may store credentials in the macOS keychain instead of `~/.
 If your ChatGPT workspace supports Codex access tokens, pipe one into the remote login:
 
 ```bash
-printenv CODEX_ACCESS_TOKEN | ssh codex-demo 'codex login --with-access-token'
+printenv CODEX_ACCESS_TOKEN | ssh SSH_ALIAS 'codex login --with-access-token'
 ```
 
 This is useful for trusted automation that should use ChatGPT workspace access rather than an OpenAI API key.

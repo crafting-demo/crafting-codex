@@ -79,10 +79,10 @@ workspaces:
 ## Commands In Workloads
 
 ```bash
-cs exec -W SANDBOX/app -- pwd
-cs exec -W SANDBOX/app -w /home/owner -- ls -la
-cs exec -W SANDBOX/app -e FOO=bar -- printenv FOO
-cs ssh -W SANDBOX/app -- 'whoami; hostname; pwd'
+cs exec -W SANDBOX/WORKLOAD -- pwd
+cs exec -W SANDBOX/WORKLOAD -w REMOTE_PROJECT_DIR -- ls -la
+cs exec -W SANDBOX/WORKLOAD -e FOO=bar -- printenv FOO
+cs ssh -W SANDBOX/WORKLOAD -- 'whoami; hostname; pwd'
 ```
 
 Use `cs exec` for deterministic noninteractive command execution. Use `cs ssh` when checking login-shell PATH or testing the same path OpenSSH/Codex App will use.
@@ -92,8 +92,8 @@ Use `cs exec` for deterministic noninteractive command execution. Use `cs ssh` w
 Codex App discovers concrete aliases from `~/.ssh/config`; pattern-only Crafting host entries are not enough. A working alias looks like:
 
 ```sshconfig
-Host codex-demo
-  HostName app--example-eng.crafting.sandboxes.site
+Host SSH_ALIAS
+  HostName WORKLOAD_SSH_HOST
   Port 22
   User owner
   ProxyCommand ~/.crafting/sandbox/cli/current/bin/cs ssh-proxy %h:443
@@ -106,8 +106,8 @@ Host codex-demo
 Verify:
 
 ```bash
-ssh codex-demo -- 'whoami; hostname; command -v codex; codex --version'
-ssh codex-demo -- 'codex doctor --summary --ascii'
+ssh SSH_ALIAS -- 'whoami; hostname; command -v codex; codex --version'
+ssh SSH_ALIAS -- 'codex doctor --summary --ascii'
 ```
 
 ## Remote Setup Script
@@ -122,9 +122,9 @@ Useful environment variables:
 
 ```bash
 CODEX_CRAFTING_ORG=eng
-CODEX_CRAFTING_WORKLOAD=app
+CODEX_CRAFTING_WORKLOAD=WORKLOAD
 CODEX_CRAFTING_REMOTE_USER=owner
-CODEX_CRAFTING_PROJECT_DIR=/home/owner
+CODEX_CRAFTING_PROJECT_DIR=REMOTE_PROJECT_DIR
 CODEX_CRAFTING_SECRET_PATH=/run/sandbox/fs/secrets/shared/shared/openai-key
 CODEX_CRAFTING_SKIP_LOGIN=1
 ```

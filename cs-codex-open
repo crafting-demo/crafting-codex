@@ -14,14 +14,16 @@ Open a manually-created Crafting sandbox in Codex Desktop.
 
 Arguments:
   SANDBOX[/WORKLOAD]  Sandbox name, optionally followed by workload/workspace.
-                      If WORKLOAD is omitted, "app" is used.
+                      If WORKLOAD is omitted, the setup script uses the first
+                      SSH-capable workload reported by Crafting.
   SSH_ALIAS           Optional SSH alias to write into ~/.ssh/config.
 
 Options:
   -W, --workload NAME       Workload/workspace name. Overrides /WORKLOAD.
   -O, --org NAME            Crafting org to pass to cs.
+  --ssh-host HOST           Explicit workload SSH host override.
   --remote-user USER        Remote SSH user. Default: owner.
-  --project-dir DIR         Remote project folder. Default: /home/owner.
+  --project-dir DIR         Remote project folder. Default: remote login dir.
   --secret-path PATH        Preferred remote OpenAI API key secret path.
   --install-codex           Install Node.js, npm, and @openai/codex if needed. Default.
   --no-install-codex        Do not install remote Codex if it is missing.
@@ -31,10 +33,10 @@ Options:
   -h, --help                Show this help.
 
 Examples:
-  cs codex-open demo/app
-  cs codex-open demo/app codex-demo
-  cs codex-open demo --workload web --project-dir /home/owner/repo
-  cs codex-open FOLDER/codex-demo --workload app --alias codex-demo
+  cs codex-open SANDBOX/WORKLOAD
+  cs codex-open SANDBOX/WORKLOAD SSH_ALIAS
+  cs codex-open SANDBOX --workload WORKLOAD --project-dir /path/to/repo
+  cs codex-open FOLDER/SANDBOX --workload WORKLOAD --alias SSH_ALIAS
 
 Notes:
   The extension creates/updates the SSH alias and verifies the remote Codex CLI.
@@ -101,6 +103,7 @@ org=""
 remote_user=""
 project_dir=""
 secret_path=""
+ssh_host=""
 skip_login=0
 install_codex=1
 should_open=1
@@ -130,6 +133,11 @@ while [[ $# -gt 0 ]]; do
     --remote-user)
       [[ $# -ge 2 ]] || die "--remote-user requires a value"
       remote_user="$2"
+      shift 2
+      ;;
+    --ssh-host)
+      [[ $# -ge 2 ]] || die "--ssh-host requires a value"
+      ssh_host="$2"
       shift 2
       ;;
     --project-dir)
@@ -215,6 +223,9 @@ if [[ -n "$org" ]]; then
 fi
 if [[ -n "$remote_user" ]]; then
   env_args+=("CODEX_CRAFTING_REMOTE_USER=${remote_user}")
+fi
+if [[ -n "$ssh_host" ]]; then
+  env_args+=("CODEX_CRAFTING_SSH_HOST=${ssh_host}")
 fi
 if [[ -n "$project_dir" ]]; then
   env_args+=("CODEX_CRAFTING_PROJECT_DIR=${project_dir}")
