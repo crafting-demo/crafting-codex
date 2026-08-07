@@ -86,17 +86,26 @@ if [ "${1:-}" = "--destroy" ] || [ "${1:-}" = "--destroy-all" ]; then
 
   # The conf names one worker template and pool, but /cr-set-template can point
   # it at a template of yours, which orphans the pair this repo made under their
-  # default names. Both sets go, or a reinstall inherits the leftovers.
+  # default names. Both sets go, or a reinstall inherits the leftovers. The
+  # names usually coincide, so only the first mention of each is acted on.
+  seen=""
+  once() {
+    case " $seen " in *" $1 "*) return 1 ;; esac
+    seen="$seen $1"
+    [ -n "$1" ]
+  }
+
   say "Deleting the worker pools"
   for p in "$WORKER_POOL" codex-worker-pool; do
-    [ -n "$p" ] || continue
+    once "$p" || continue
     # The pool holds instances built from the worker template, so it has to go
-    # before the template it is built from.
+    # before the template it is built from. Removal is asynchronous: the pool
+    # record survives until its instances finish deleting.
     cs sandbox pool remove "$p" -f >/dev/null 2>&1 && echo "  $p" || true
   done
   say "Deleting the templates"
   for t in "$WORKER_TEMPLATE" codex-worker "$ROUTER_TEMPLATE"; do
-    [ -n "$t" ] || continue
+    once "$t" || continue
     cs template remove "$t" -f >/dev/null 2>&1 && echo "  $t" || true
   done
   say "Deleting the login token secret and the service account"
@@ -235,17 +244,49 @@ cs sandbox pin "$ROUTER_SANDBOX" | tail -1
 # waiting on.
 # ---------------------------------------------------------------------------
 
-say "Configuring the worker pool $WORKER_POOL"
-if cs sandbox pool show "$WORKER_POOL" -o json >/dev/null 2>&1; then
-  cs sandbox pool update "$WORKER_POOL" \
-    "min=$CODEX_ROUTER_POOL_MIN" "max=$CODEX_ROUTER_POOL_MAX" | tail -1
-else
+pool_template_id() {
+  cs sandbox pool show "$1" -o json 2>/dev/null | jq -r '.spec.sandbox.template_id // empty'
+}
+
+create_pool() {
   # create takes flags where update takes PARAM=VALUE arguments; passing
   # update's form here is silently ignored and leaves the pool at min=1.
   cs sandbox pool create "$WORKER_POOL" -t "$WORKER_TEMPLATE" \
     --min "$CODEX_ROUTER_POOL_MIN" --max "$CODEX_ROUTER_POOL_MAX" | tail -1
+}
+
+say "Configuring the worker pool $WORKER_POOL"
+want_id="$(cs template show "$WORKER_TEMPLATE" -o json 2>/dev/null | jq -r '.meta.id // empty')"
+have_id="$(pool_template_id "$WORKER_POOL")"
+
+if [ -z "$have_id" ]; then
+  create_pool
+elif [ "$have_id" = "$want_id" ]; then
+  cs sandbox pool update "$WORKER_POOL" \
+    "min=$CODEX_ROUTER_POOL_MIN" "max=$CODEX_ROUTER_POOL_MAX" | tail -1
+else
+  # The pool is bound to a template that is not the one we just wrote, which
+  # happens after a teardown and reinstall: the name comes back but the id is
+  # new. `pool update` cannot rebind a template -- only create takes -t -- so
+  # an updated pool here would keep filling from a template that may not even
+  # exist, and every claim would fail. Replace it instead.
+  say "The pool points at a different template; replacing it"
+  cs sandbox pool remove "$WORKER_POOL" -f >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    [ -z "$(pool_template_id "$WORKER_POOL")" ] && break
+    sleep 2
+  done
+  if [ -n "$(pool_template_id "$WORKER_POOL")" ]; then
+    warn "the old '$WORKER_POOL' is still deleting its instances, so it could not
+  be recreated against the new template. Threads will build their sandbox from
+  scratch until it clears. Re-run ./bootstrap.sh once
+  'cs -O $ORG sandbox pool list' no longer shows it."
+  else
+    create_pool
+  fi
 fi
-cs sandbox pool enable "$WORKER_POOL" | tail -1
+cs sandbox pool enable "$WORKER_POOL" >/dev/null 2>&1 \
+  || warn "could not enable the pool '$WORKER_POOL'"
 
 # ---------------------------------------------------------------------------
 # Wait for the router to be ready to shim
