@@ -92,19 +92,28 @@ thing standing between you and your work.
 
 ## Working on the router
 
-The scripts under `router/` are the source of truth. `bootstrap.sh` bakes them
-into the router template, which is what a rebuilt sandbox comes up with, but
-rebuilding takes minutes and loses the bindings:
+Every sandbox checks this repo out at `~/crafting-codex` and runs it from
+there: the templates carry only the checkout, the secret renders, the config
+block, and one `sandbox-setup.sh` line. On the router, `~/.codex-router/bin`
+and `lib` are symlinks into the checkout, so the scripts under `router/` in
+the repo are literally what runs.
+
+That makes updating a running router either of:
 
 ```bash
-./deploy.sh      # copy router/ into the running sandbox, restart the demux
-./bootstrap.sh   # update the template too, for the next rebuild
+ssh codex-cloud 'git -C ~/crafting-codex pull && ~/.codex-router/bin/codexctl restart'
+./deploy.sh      # the same, but pushes your uncommitted working copy
 ```
 
-Skills and prompts follow the same split. Codex reads them from `CODEX_HOME` on
-whichever machine runs the app-server, which for a routed thread is the worker
-sandbox rather than your Mac. `install.sh` puts everything on your Mac, and
-`build-template.py` bakes the sandbox-safe files into the templates.
+Workers pick up changes when their sandbox is built, so the warm pool serves
+instances checked out at whatever the repo was when the pool filled. Recycle
+the pool (`codexctl reap all`, or delete and recreate it) after a change that
+workers need.
+
+Skills and prompts ride the same checkout: `sandbox-setup.sh` copies the
+sandbox-safe ones into `CODEX_HOME` on create, since Codex reads them from
+whichever machine runs the app-server. `install.sh` puts your Mac's copies in
+place.
 
 ## Teardown, and what can stall it
 
@@ -150,10 +159,11 @@ Treat `~/.codex/auth.json` like a password; it contains access tokens.
 ```text
 bootstrap.sh          create the Crafting side: templates, pool, router sandbox
 install.sh            write the ~/.ssh/config entry on this machine
-uninstall.sh          undo install.sh
-deploy.sh             push router/ into the running router sandbox
+uninstall.sh          undo install.sh; --all, --purge
+deploy.sh             push your working copy into the running router sandbox
 doctor.sh             check everything; --probe, --log, --watch
-build-template.py     bake router/ into the Crafting templates
+sandbox-setup.sh      what every sandbox runs on create, from its checkout
+build-template.py     generate the (small) Crafting templates
 lib/config.sh         settings resolution, shared by all of the above
 bin/probe-router      drive the router the way Codex App does
 router/
@@ -168,15 +178,15 @@ prompts/
   local/                 Mac only: needs this checkout and your cs login
     codexify.md            /codexify: make a template of yours codex-ready
     cr-set-template.md     /cr-set-template: change the router's worker template
-  anywhere/              also baked into the sandbox templates
+  anywhere/              also installed into every sandbox by sandbox-setup.sh
     cs-new.md              /cs-new: new chat, and so a new sandbox
     cs-task.md             /cs-task: hand work to a Crafting LLM task
     cs-status.md           /cs-status: how that task is going
     cs-sandbox.md          /cs-sandbox: which sandbox this thread is in
     cs-templates.md        /cs-templates: what you can build from
 skills/crafting-sandbox/
-  SKILL.md                  also baked into the sandbox templates
-  references/cs-cli.md      also baked in
+  SKILL.md                  also installed into every sandbox
+  references/cs-cli.md      also installed
   references/one-sandbox.md the pre-router flow; Mac only, deliberately
   scripts/                  the pre-router setup script
 skills/codex-worker-templates/
@@ -184,9 +194,9 @@ skills/codex-worker-templates/
 spike/                  notes from working out how Codex App connects
 ```
 
-`cs-codex-open` and `references/one-sandbox.md` are the older flow, where one
-named sandbox is wired to Codex App by hand and every thread shares it. Kept
-for anyone who wants it, and deliberately not baked into sandboxes.
+`references/one-sandbox.md` is the older flow, where one named sandbox is
+wired to Codex App by hand and every thread shares it. Kept for anyone who
+wants it, and deliberately not installed into sandboxes.
 
 ## Development
 

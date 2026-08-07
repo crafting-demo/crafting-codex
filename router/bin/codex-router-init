@@ -26,7 +26,9 @@ LOG_FILE="$LOG_DIR/init.log"
 # to PATH before running any codex command, so this is the name that has to be
 # ours.
 SHIM_PATH="${CODEX_INSTALL_DIR:-/home/owner/.local/bin}/codex"
-REAL_PATH="$ROUTER_HOME/bin/codex.real"
+# Under etc/ rather than bin/: bin is a symlink into the repo checkout now,
+# and a runtime binary does not belong inside a git working tree.
+REAL_PATH="$ROUTER_HOME/etc/codex.real"
 INTERVAL="${CODEX_ROUTER_WATCH_INTERVAL:-5}"
 
 mkdir -p "$ETC_DIR" "$LOG_DIR" "$RUN_DIR" "$ROUTER_HOME/threads"

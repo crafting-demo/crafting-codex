@@ -22,8 +22,9 @@ Steps:
    `CODEX_ROUTER_ORG` (pass it as `cs -O ORG ...`) and `CODEX_OPENAI_SECRET`.
 2. Dump the source: `cs template show SOURCE --def`. Save it to a temp file.
 3. Apply the worker additions from the skill to every workspace the user wants
-   Codex on (ask if the template has more than one workspace): the OpenAI key
-   file, the `on_create` Codex install and login (chained after any existing
+   Codex on (ask if the template has more than one workspace): the
+   crafting-codex checkout, the OpenAI key file, the `on_create` line running
+   `sandbox-setup.sh worker` from that checkout (chained after any existing
    `on_create` command), `$HOME/.local/bin` on PATH, and the `detach_env`
    customization.
 4. Validate with `cs template validate`, then create the new template with a

@@ -131,6 +131,7 @@ def real_codex() -> str:
     """The actual CLI, not the shim standing in for it on PATH."""
     candidates = [
         os.environ.get("CODEX_ROUTER_REAL", ""),
+        os.path.join(ROUTER_HOME, "etc", "codex.real"),
         os.path.join(ROUTER_HOME, "bin", "codex.real"),
         os.path.expanduser("~/.local/lib/node_modules/@openai/codex/bin/codex.js"),
     ]

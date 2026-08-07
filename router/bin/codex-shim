@@ -3,7 +3,7 @@
 #
 # Stands in for the Codex CLI on the router sandbox, installed at the path
 # Codex Desktop puts first on PATH ($HOME/.local/bin/codex) with the real
-# binary moved to $ROUTER_HOME/bin/codex.real.
+# binary moved to $ROUTER_HOME/etc/codex.real.
 #
 # Desktop drives a remote environment with exactly three kinds of call, and only
 # two of them are ours:
@@ -53,6 +53,7 @@ if [ -z "$REAL" ] && [ -r "$ROUTER_HOME/etc/codex-real" ]; then
 fi
 if [ -z "$REAL" ] || [ ! -x "$REAL" ]; then
   for candidate in \
+    "$ROUTER_HOME/etc/codex.real" \
     "$ROUTER_HOME/bin/codex.real" \
     "$HOME/.local/lib/node_modules/@openai/codex/bin/codex.js" \
     /usr/local/bin/codex \

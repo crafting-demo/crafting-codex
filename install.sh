@@ -123,8 +123,8 @@ chmod 600 "$SSH_CONFIG"
 # ---------------------------------------------------------------------------
 
 # prompts/local needs this checkout and a human's cs login, so it is installed
-# here only. prompts/anywhere also works inside a sandbox, and build-template.py
-# bakes those same files into the router and worker templates.
+# here only. prompts/anywhere also works inside a sandbox; sandbox-setup.sh
+# installs those same files from each sandbox's own checkout of this repo.
 PROMPTS_DIR="${CODEX_HOME:-$HOME/.codex}/prompts"
 say "Installing slash commands into $PROMPTS_DIR"
 mkdir -p "$PROMPTS_DIR"

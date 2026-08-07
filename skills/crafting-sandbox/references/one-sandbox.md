@@ -6,7 +6,7 @@ is wired to Codex App as an SSH remote, and every thread runs in it.
 **This is not how to answer "create a new Crafting sandbox."** That means a new
 thread in the Crafting Sandbox workspace on the codex-cloud connection, as the
 skill says. Read this only when the user explicitly asks about the
-single-sandbox setup, `cs codex-open`, or the remote setup script.
+single-sandbox setup or the remote setup script.
 
 Everything here runs on the user's Mac. It cannot be done from inside a
 sandbox: it edits `~/.ssh/config` and drives Codex App.
@@ -49,25 +49,16 @@ sandbox: it edits `~/.ssh/config` and drives Codex App.
    scripts/setup-crafting-codex-remote.sh SANDBOX_NAME [SSH_ALIAS]
    ```
 
-   With this repo installed as a `cs` extension, and the sandbox already
-   created:
-
-   ```bash
-   cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]
-   cs codex-open SANDBOX_NAME/WORKLOAD --no-install-codex
-   ```
-
    With an explicit org:
 
    ```bash
    CODEX_CRAFTING_ORG=ORG scripts/setup-crafting-codex-remote.sh FOLDER/SANDBOX SSH_ALIAS
-   CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/SANDBOX --workload WORKLOAD --alias SSH_ALIAS
    ```
 
    The script writes a concrete `~/.ssh/config` host alias, verifies SSH,
    installs the remote Codex CLI if it is missing, signs it in from remote auth
-   sources, and runs `codex doctor`. `cs codex-open` then opens Codex Desktop,
-   but it cannot add or enable the connection in Codex App settings.
+   sources, and runs `codex doctor`. It cannot add or enable the connection in
+   Codex App settings.
 
 5. Tell the user to finish it by hand, and do not claim the sandbox is
    connected until they confirm:

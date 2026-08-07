@@ -134,6 +134,10 @@ resolve_config() {
     || die "could not read the Crafting server URL from cs"
   CODEX_ROUTER_DNS_SUFFIX="${CODEX_ROUTER_DNS_SUFFIX:-$(suffix_from_url "$CODEX_ROUTER_SERVER_URL")}"
 
+  # The sandboxes run this repo from a checkout, so the templates need a URL
+  # they can clone. Point it at your fork if you have one.
+  CODEX_ROUTER_REPO="${CODEX_ROUTER_REPO:-https://github.com/crafting-demo/crafting-codex}"
+
   CODEX_ROUTER_SANDBOX="${CODEX_ROUTER_SANDBOX:-codex-router}"
   CODEX_ROUTER_WORKSPACE="${CODEX_ROUTER_WORKSPACE:-router}"
   CODEX_ROUTER_ROUTER_TEMPLATE="${CODEX_ROUTER_ROUTER_TEMPLATE:-codex-router}"
@@ -176,6 +180,7 @@ resolve_config() {
 
 CONF_KEYS="
 CODEX_ROUTER_ORG
+CODEX_ROUTER_REPO
 CODEX_ROUTER_SERVER_URL
 CODEX_ROUTER_DNS_SUFFIX
 CODEX_ROUTER_SANDBOX
@@ -201,7 +206,7 @@ CODEX_ALIAS
 save_conf() {
   local k v
   {
-    echo "# Written by setup.sh. Every value can be overridden by the same name"
+    echo "# Written by bootstrap.sh. Every value can be overridden by the same name"
     echo "# in the environment. Delete this file to start the questions over."
     for k in $CONF_KEYS; do
       v="${!k-}"

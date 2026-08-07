@@ -19,8 +19,21 @@ logged in as a human -- worker sandboxes have neither.
 Copy the template (`cs template show SOURCE --def`), then make these changes
 to each workspace Codex should run in. They mirror what `build-template.py`
 generates for `codex-worker`, so a codexified template behaves identically.
+The heavy lifting lives in the crafting-codex repo's own `sandbox-setup.sh`,
+which the template checks out and runs -- the template additions are small.
 
-1. Render the org's OpenAI key into the sandbox (skip if the org has no such
+1. Add a checkout of the crafting-codex repo alongside whatever the workspace
+   already checks out (`CODEX_ROUTER_REPO` in `codex-cloud.conf` has the URL,
+   which matters if the user runs a fork):
+
+```yaml
+    checkouts:
+      - path: crafting-codex
+        repo:
+          git: https://github.com/crafting-demo/crafting-codex
+```
+
+2. Render the org's OpenAI key into the sandbox (skip if the org has no such
    secret; Codex then needs `codex login --device-auth` by hand):
 
 ```yaml
@@ -37,28 +50,30 @@ generates for `codex-worker`, so a codexified template behaves identically.
    The secret's name is `CODEX_OPENAI_SECRET` in `codex-cloud.conf`; use that
    value, not the literal above.
 
-2. Install and sign in the Codex CLI on create. If the workspace already has
-   an `on_create` command, chain this after it with `&&`; keep the longer of
-   the two timeouts, at least `10m0s`:
+3. Run the worker setup on create. It installs the Codex CLI, signs it in
+   from the key above, writes the approvals-off config, and lays down the
+   skills and slash commands. If the workspace already has an `on_create`
+   command, chain this after it with `&&`; keep the longer of the two
+   timeouts, at least `10m0s`:
 
 ```yaml
     lifecycle:
       on_create:
         run:
-          cmd: npm install -g @openai/codex --prefix "$HOME/.local" && if [ -s /home/owner/.codex-worker/openai-key ]; then PATH="$HOME/.local/bin:$PATH"; codex login --with-api-key < /home/owner/.codex-worker/openai-key || true; fi
+          cmd: /home/owner/crafting-codex/sandbox-setup.sh worker
         max_retries: 2
         timeout: 10m0s
 ```
 
-3. Make sure the workspace `env` puts `$HOME/.local/bin` on PATH (that is
-   where the npm prefix lands the `codex` binary):
+4. Make sure the workspace `env` puts `$HOME/.local/bin` on PATH (that is
+   where the setup lands the `codex` binary):
 
 ```yaml
     env:
       - PATH=/usr/local/go/bin:/usr/local/node/bin:$HOME/.local/bin:$PATH
 ```
 
-4. Add the customization the stock worker template carries, so pooled
+5. Add the customization the stock worker template carries, so pooled
    instances detach cleanly when claimed:
 
 ```yaml
