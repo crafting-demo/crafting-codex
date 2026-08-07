@@ -1,0 +1,1125 @@
+#!/usr/bin/env python3
+"""The websocket the Codex app-server would have opened, with workers behind it.
+
+Codex Desktop drives a remote environment through a single app-server: it
+starts one with `--listen unix://...`, then pipes every SSH connection into
+that socket with `codex app-server proxy`. Every thread on the host is JSON-RPC
+multiplexed over that one websocket, which is why thread identity is invisible
+at the SSH layer and visible here.
+
+So this takes the listening end. It is a websocket server on the socket the
+shim points the proxy at, and a websocket client to one real app-server per
+worker sandbox, each reached over an SSH port forward.
+
+    Desktop --ssh--> codex app-server proxy --> [this] --> app-server on cx-abc
+                                                       --> app-server on cx-def
+
+Almost everything is forwarded byte for byte. Only three things are
+interpreted, and each earns it:
+
+    initialize    Desktop expects exactly one answer, but every worker needs
+                  its own handshake, so the demux performs them and replies
+    thread/start  the thread's id is minted in the response, so the worker has
+                  to be claimed first and bound afterwards
+    threadId      present on ~80 message types, and the whole point
+
+Anything else without a threadId -- fs/*, command/exec, gitDiffToRemote -- has
+no thread to belong to, so it follows the last thread this connection touched.
+See route_request().
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import contextlib
+import json
+import os
+import socket
+import sys
+import time
+import uuid
+from typing import Any, Callable
+
+try:  # websockets >= 13 keeps the asyncio implementation here
+    from websockets.asyncio.client import connect as ws_connect
+    from websockets.asyncio.server import unix_serve
+except ImportError:  # older releases export the same names at the top level
+    from websockets import connect as ws_connect  # type: ignore[attr-defined]
+    from websockets import unix_serve  # type: ignore[attr-defined]
+
+ROUTER_HOME = os.environ.get("CODEX_ROUTER_HOME", "/home/owner/.codex-router")
+WORKER_BIN = os.path.join(ROUTER_HOME, "bin", "codex-worker")
+THREADS_DIR = os.path.join(ROUTER_HOME, "threads")
+
+# The routing key for whatever answers anything not tied to a thread: the
+# app's own startup calls, its ephemeral utility threads, drafts that have not
+# run a turn, and threads that predate the router. None of that is anyone's
+# work, so it runs on an app-server here on the router rather than costing a
+# sandbox.
+DEFAULT_KEY = "default"
+
+# Where the router's own app-server listens. Fixed rather than ephemeral so a
+# restarted demux finds the instance its predecessor left running.
+LOCAL_PORT = int(os.environ.get("CODEX_ROUTER_LOCAL_PORT", "8484"))
+
+# The methods that mean a thread is real: the point at which it stops being
+# something the app opened speculatively and earns a sandbox of its own.
+TURN_METHODS = ("turn/start", "review/start")
+
+# Where a turn carries what it was asked to do, in the shapes seen so far.
+TURN_INPUT_FIELDS = ("input", "items", "content")
+
+# A pooled sandbox that has to be built from scratch is the slow case, and
+# resolve blocks the request the app is waiting on.
+RESOLVE_TIMEOUT = float(os.environ.get("CODEX_ROUTER_RESOLVE_TIMEOUT", "300"))
+TUNNEL_TIMEOUT = float(os.environ.get("CODEX_ROUTER_TUNNEL_TIMEOUT", "120"))
+HANDSHAKE_TIMEOUT = float(os.environ.get("CODEX_ROUTER_HANDSHAKE_TIMEOUT", "60"))
+
+# Every frame, both ways, for when the routing decisions in the normal log are
+# not enough to explain what the app did.
+TRACE = os.environ.get("CODEX_ROUTER_TRACE", "") not in ("", "0")
+
+_log_file = None
+
+# The client connection currently being served; see handle().
+_active = None
+
+
+def trace(direction: str, msg: dict, note: str = "") -> None:
+    if not TRACE or not msg:
+        return
+    kind = msg.get("method") or ("result" if "result" in msg else "error")
+    body = ""
+    if kind == "initialize":
+        # The one request whose params decide what the workers can do.
+        body = " " + json.dumps(msg.get("params"))[:400]
+    elif kind in ("thread/start", "turn/start"):
+        # The params that decide whether a thread earns a sandbox.
+        body = " " + json.dumps(msg.get("params"))[:400]
+    elif "method" not in msg:
+        body = " " + json.dumps(msg)[:300]
+    log("  %s %s id=%r thread=%r%s%s"
+        % (direction, kind, msg.get("id"), thread_id_of(msg),
+           " " + note if note else "", body))
+
+
+def log(msg: str) -> None:
+    line = "%s [%d] %s\n" % (
+        time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
+        os.getpid(),
+        msg,
+    )
+    if _log_file is not None:
+        _log_file.write(line)
+        _log_file.flush()
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def port_answers(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def real_codex() -> str:
+    """The actual CLI, not the shim standing in for it on PATH."""
+    candidates = [
+        os.environ.get("CODEX_ROUTER_REAL", ""),
+        os.path.join(ROUTER_HOME, "bin", "codex.real"),
+        os.path.expanduser("~/.local/lib/node_modules/@openai/codex/bin/codex.js"),
+    ]
+    try:
+        with open(os.path.join(ROUTER_HOME, "etc", "codex-real")) as fh:
+            candidates.insert(1, fh.read().strip())
+    except OSError:
+        pass
+    for path in candidates:
+        if path and os.access(path, os.X_OK):
+            return path
+    raise RuntimeError("the real codex CLI could not be found")
+
+
+async def run_worker_bin(*args: str, timeout: float) -> str:
+    """Call codex-worker and return its stdout, or raise RuntimeError."""
+    proc = await asyncio.create_subprocess_exec(
+        WORKER_BIN,
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        out, err = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        raise RuntimeError("codex-worker %s timed out after %gs" % (args[0], timeout))
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "codex-worker %s failed (rc=%s): %s"
+            % (args[0], proc.returncode, err.decode(errors="replace").strip())
+        )
+    return out.decode(errors="replace").strip()
+
+
+def load_bindings() -> dict[str, str]:
+    """thread id -> worker name, as left by earlier runs.
+
+    The demux is restarted by every Desktop reconnect, so what a thread owns
+    has to survive somewhere other than this process. codex-worker writes these
+    files; this only reads them.
+    """
+    bindings: dict[str, str] = {}
+    try:
+        names = os.listdir(THREADS_DIR)
+    except OSError:
+        return bindings
+    for entry in names:
+        if entry.endswith((".host", ".ok")) or entry == DEFAULT_KEY:
+            continue
+        try:
+            with open(os.path.join(THREADS_DIR, entry)) as fh:
+                worker = fh.read().strip()
+        except OSError:
+            continue
+        if worker:
+            bindings[entry] = worker
+    return bindings
+
+
+# ---------------------------------------------------------------------------
+# Workers
+# ---------------------------------------------------------------------------
+
+
+class Worker:
+    """One worker sandbox, its tunnel, and the app-server connection over it."""
+
+    def __init__(self, name: str, host: str) -> None:
+        self.name = name
+        self.host = host
+        self.port = 0
+        self.tunnel: asyncio.subprocess.Process | None = None
+        self.ws: Any = None
+        self.reader: asyncio.Task | None = None
+        self.ready = False
+
+        # Where messages from this worker go: set by whichever client
+        # connection is currently attached, and None between connections.
+        self.sink: Callable[[str, dict], Any] | None = None
+
+        # Requests the demux itself made, which must not reach the client.
+        self._internal: dict[int, asyncio.Future] = {}
+        self._next_internal = -1
+
+    # -- connection ---------------------------------------------------------
+
+    async def open(self) -> None:
+        await self._bring_up()
+
+        # A port forward accepts local connections before the far end is
+        # reachable -- ssh takes the connection and only then discovers there
+        # is nothing to hand it to -- so the handshake, not the connect, is
+        # what proves the app-server is there.
+        #
+        # No compression and no size cap: Desktop disables permessage-deflate,
+        # and file reads and diffs travel as single JSON-RPC frames that the
+        # library's 1MB default would drop as too large.
+        deadline = time.monotonic() + TUNNEL_TIMEOUT
+        while True:
+            try:
+                self.ws = await ws_connect(
+                    "ws://127.0.0.1:%d" % self.port,
+                    compression=None,
+                    max_size=None,
+                    ping_interval=20,
+                    ping_timeout=60,
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        "app-server on %s never answered: %s" % (self.name, exc)
+                    ) from exc
+                await asyncio.sleep(0.5)
+
+        self.reader = asyncio.create_task(self._read())
+        log("OPEN %s ws://127.0.0.1:%d" % (self.name, self.port))
+
+    async def _bring_up(self) -> None:
+        self.port = free_port()
+        log("TUNNEL %s -> 127.0.0.1:%d" % (self.name, self.port))
+        self.tunnel = await asyncio.create_subprocess_exec(
+            WORKER_BIN,
+            "up",
+            self.host,
+            str(self.port),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await self._wait_for_port()
+
+    async def _wait_for_port(self) -> None:
+        deadline = time.monotonic() + TUNNEL_TIMEOUT
+        while time.monotonic() < deadline:
+            if self.tunnel is not None and self.tunnel.returncode is not None:
+                raise RuntimeError(
+                    "tunnel to %s exited with %s" % (self.name, self.tunnel.returncode)
+                )
+            try:
+                _, writer = await asyncio.open_connection("127.0.0.1", self.port)
+            except OSError:
+                await asyncio.sleep(0.25)
+                continue
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+            return
+        raise RuntimeError("tunnel to %s never started listening" % self.name)
+
+    def alive(self) -> bool:
+        if self.ws is None:
+            return False
+        state = getattr(self.ws, "state", None)
+        if state is not None:
+            return str(getattr(state, "name", state)) == "OPEN"
+        return not getattr(self.ws, "closed", False)
+
+    async def close(self) -> None:
+        self.sink = None
+        if self.reader is not None:
+            self.reader.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self.reader
+            self.reader = None
+        if self.ws is not None:
+            with contextlib.suppress(Exception):
+                await self.ws.close()
+            self.ws = None
+        if self.tunnel is not None and self.tunnel.returncode is None:
+            self.tunnel.terminate()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(self.tunnel.wait(), 10)
+            if self.tunnel.returncode is None:
+                self.tunnel.kill()
+        self.tunnel = None
+        log("CLOSE %s" % self.name)
+
+    # -- traffic ------------------------------------------------------------
+
+    async def _read(self) -> None:
+        try:
+            async for raw in self.ws:
+                if isinstance(raw, bytes):
+                    raw = raw.decode(errors="replace")
+                try:
+                    msg = json.loads(raw)
+                except (ValueError, TypeError):
+                    msg = {}
+
+                # Answers to the demux's own handshake never reach the client:
+                # it asked one question and must see one answer.
+                rid = msg.get("id") if isinstance(msg, dict) else None
+                if isinstance(rid, int) and rid in self._internal:
+                    future = self._internal.pop(rid)
+                    if not future.done():
+                        future.set_result(msg)
+                    continue
+
+                if self.sink is not None:
+                    await self.sink(raw, msg if isinstance(msg, dict) else {}, self)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the worker closing is normal
+            log("READER %s ended: %s" % (self.name, exc))
+
+    async def send(self, raw: str) -> None:
+        await self.ws.send(raw)
+
+    async def request(self, method: str, params: dict, timeout: float) -> dict:
+        """Ask the worker something on the demux's own behalf."""
+        rid = self._next_internal
+        self._next_internal -= 1
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._internal[rid] = future
+        await self.ws.send(
+            json.dumps({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
+        )
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            self._internal.pop(rid, None)
+            raise RuntimeError("%s on %s timed out" % (method, self.name))
+
+    async def notify(self, method: str, params: dict | None = None) -> None:
+        await self.ws.send(
+            json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}})
+        )
+
+
+class LocalWorker(Worker):
+    """The app-server on the router itself.
+
+    Everything routed to DEFAULT_KEY lands here: nothing it serves is anyone's
+    work, so none of it justifies a sandbox. There is no tunnel -- the process
+    this starts is the app-server, listening on its own loopback. A previous
+    demux's instance is reused when one is still up, which is also what keeps
+    a demux restart from ending the app's utility threads mid-question.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("router", "local")
+
+    async def _bring_up(self) -> None:
+        self.port = LOCAL_PORT
+        if port_answers(self.port):
+            return
+        log("LOCAL app-server starting on 127.0.0.1:%d" % self.port)
+        log_fd = open(os.path.join(ROUTER_HOME, "log", "local-app-server.log"), "ab")
+        try:
+            self.tunnel = await asyncio.create_subprocess_exec(
+                real_codex(),
+                "app-server",
+                "--listen",
+                "ws://127.0.0.1:%d" % self.port,
+                stdout=log_fd,
+                stderr=log_fd,
+            )
+        finally:
+            log_fd.close()
+        await self._wait_for_port()
+
+
+class WorkerPool:
+    """Routing keys to live workers, resolved once and kept.
+
+    Keyed by sandbox name rather than by routing key: a thread's own id and the
+    key its worker was claimed under both name the same sandbox, and opening a
+    second tunnel to it would give that sandbox two app-servers and a thread
+    that only one of them knows about.
+    """
+
+    def __init__(self) -> None:
+        self._by_name: dict[str, Worker] = {}
+        self._resolved: dict[str, tuple[str, str]] = {}
+        self._key_locks: dict[str, asyncio.Lock] = {}
+        self._name_locks: dict[str, asyncio.Lock] = {}
+
+        # The initialize the client sent, replayed to every worker so each one
+        # is handshaked exactly as Desktop would have handshaked it.
+        self.init_params: dict = {}
+        self.init_result: dict | None = None
+
+        # Requests the workers made of the client, kept here because they
+        # outlive any one client connection: an approval asked before a
+        # reconnect is answered after it.
+        self.outstanding: dict[int, tuple[Worker, Any]] = {}
+        self._next_out = 1
+
+    def next_out(self) -> int:
+        rid = self._next_out
+        self._next_out += 1
+        return rid
+
+    def _lock(self, table: dict, key: str) -> asyncio.Lock:
+        return table.setdefault(key, asyncio.Lock())
+
+    async def adopt(self, params: dict) -> None:
+        """Take on a client's initialize, dropping workers handshaked for another.
+
+        A worker's capabilities are fixed by the initialize it was given, and
+        one app-server socket can be shared by more than one client -- Desktop
+        opens a connection per window, and anything else driving the router
+        opens its own. A client that declares different capabilities cannot be
+        served by workers handshaked for the previous one: it would be told its
+        own requests need capabilities it did in fact ask for.
+        """
+        if params == self.init_params:
+            return
+        if self._by_name:
+            log("REHANDSHAKE: a client connected with different capabilities")
+            for worker in list(self._by_name.values()):
+                await worker.close()
+            self._by_name.clear()
+            self._resolved.clear()
+            self.outstanding.clear()
+        self.init_params = params
+        self.init_result = None
+
+    async def resolve(self, key: str) -> tuple[str, str]:
+        async with self._lock(self._key_locks, key):
+            cached = self._resolved.get(key)
+            if cached is not None and self._by_name.get(cached[0]) is not None:
+                return cached
+            out = await run_worker_bin("resolve", key, timeout=RESOLVE_TIMEOUT)
+            name, _, host = out.partition(" ")
+            if not name or not host:
+                raise RuntimeError("unparsable resolve output: %r" % out)
+            self._resolved[key] = (name, host)
+            return name, host
+
+    async def connect(self, name: str, host: str) -> Worker:
+        # Several messages for one thread arrive back to back; without the lock
+        # each would build its own tunnel to the same sandbox.
+        async with self._lock(self._name_locks, name):
+            worker = self._by_name.get(name)
+            if worker is not None and worker.alive():
+                return worker
+            if worker is not None:
+                log("REOPEN %s (its connection is gone)" % name)
+                await worker.close()
+
+            worker = Worker(name, host)
+            await worker.open()
+            await self._handshake(worker)
+            self._by_name[name] = worker
+            return worker
+
+    async def get(self, key: str) -> Worker:
+        if key == DEFAULT_KEY:
+            return await self._local()
+        started = time.monotonic()
+        name, host = await self.resolve(key)
+        try:
+            worker = await self.connect(name, host)
+        except Exception as exc:  # noqa: BLE001
+            # The cache named a sandbox we cannot reach. Usually it went away
+            # while we held it -- suspended out from under us, or deleted --
+            # and resolving again is what re-checks Crafting and rebinds. Do
+            # that once, so a vanished worker costs a slow path and not the
+            # thread.
+            log("UNREACHABLE %s (%s) -- resolving %s again" % (name, exc, key))
+            await self.forget(key, name)
+            name, host = await self.resolve(key)
+            worker = await self.connect(name, host)
+        if time.monotonic() - started > 1:
+            log("READY key=%s worker=%s in %.1fs"
+                % (key, worker.name, time.monotonic() - started))
+        return worker
+
+    async def _local(self) -> Worker:
+        async with self._lock(self._name_locks, "router"):
+            worker = self._by_name.get("router")
+            if worker is not None and worker.alive():
+                return worker
+            if worker is not None:
+                log("REOPEN router (its connection is gone)")
+                await worker.close()
+            worker = LocalWorker()
+            await worker.open()
+            await self._handshake(worker)
+            self._by_name["router"] = worker
+            return worker
+
+    async def forget(self, key: str, name: str) -> None:
+        """Drop everything cached about a worker, here and on the shell side."""
+        self._resolved.pop(key, None)
+        worker = self._by_name.pop(name, None)
+        if worker is not None:
+            await worker.close()
+        try:
+            await run_worker_bin("invalidate", key, timeout=RESOLVE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001
+            log("INVALIDATE %s failed: %s" % (key, exc))
+
+    async def _handshake(self, worker: Worker) -> None:
+        """Give a new worker the initialize Desktop gave the demux."""
+        reply = await worker.request("initialize", self.init_params, HANDSHAKE_TIMEOUT)
+        if "error" in reply:
+            raise RuntimeError("initialize on %s failed: %s" % (worker.name, reply["error"]))
+        await worker.notify("initialized")
+        worker.ready = True
+        if self.init_result is None:
+            self.init_result = reply.get("result", {})
+
+    def connected(self) -> list[Worker]:
+        return [w for w in self._by_name.values() if w.alive()]
+
+    async def close_all(self) -> None:
+        for worker in list(self._by_name.values()):
+            await worker.close()
+        self._by_name.clear()
+
+
+# ---------------------------------------------------------------------------
+# One Desktop connection
+# ---------------------------------------------------------------------------
+
+
+def thread_id_of(msg: dict) -> str | None:
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        return None
+    for field in ("threadId", "thread_id"):
+        value = params.get(field)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def yolo_enabled() -> bool:
+    """Whether threads run with approvals off and full access. On by default;
+    `codexctl yolo off` writes the file that turns it back off."""
+    try:
+        with open(os.path.join(ROUTER_HOME, "yolo")) as fh:
+            return fh.read().strip() != "off"
+    except OSError:
+        return True
+
+
+def force_yolo(raw: str, msg: dict) -> str:
+    """Rewrite a thread/start or turn/start so the thread never asks.
+
+    Every worker is a sandbox of its own with nothing else in it, so the
+    isolation Codex would be approving its way around already exists one
+    layer up. The field shapes differ between the two methods and are set
+    only where the protocol schema says they exist.
+    """
+    if not yolo_enabled():
+        return raw
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        params = {}
+        msg["params"] = params
+    # Newer clients say the same things through a `permissions` object, and
+    # the app-server refuses a request that speaks both languages.
+    params.pop("permissions", None)
+    params["approvalPolicy"] = "never"
+    if msg.get("method") == "thread/start":
+        params["sandbox"] = "danger-full-access"
+    else:
+        params["sandboxPolicy"] = {"type": "dangerFullAccess"}
+    return json.dumps(msg)
+
+
+def turn_has_work(msg: dict) -> bool:
+    """Whether a turn was actually asked to do something.
+
+    Codex App starts turns that carry nothing -- it opened a thread, turned it
+    empty, and never came back. Those write no rollout and do no work, so
+    giving them a sandbox buys an idle sandbox per conversation. A turn whose
+    input we cannot find at all is treated as real: the cost of being wrong
+    that way is a sandbox, and the other way it is someone's work on the
+    shared worker.
+    """
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        return True
+    found = False
+    for field in TURN_INPUT_FIELDS:
+        value = params.get(field)
+        if value is None:
+            continue
+        found = True
+        if value:
+            return True
+    return not found
+
+
+def thread_id_in(result: Any) -> str | None:
+    """The thread id in a thread/start result, whichever shape it came in."""
+    if not isinstance(result, dict):
+        return None
+    thread = result.get("thread")
+    tid = thread.get("id") if isinstance(thread, dict) else None
+    tid = tid or result.get("threadId") or result.get("id")
+    return tid if isinstance(tid, str) and tid else None
+
+
+def _unique_by_id(items: list) -> list:
+    """Drop later entries that repeat an id already seen, order kept."""
+    seen: set[str] = set()
+    out = []
+    for item in items:
+        key = item.get("id") if isinstance(item, dict) else None
+        if isinstance(key, str):
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(item)
+    return out
+
+
+def _replace_strings(node: Any, mapping: dict[str, str]) -> Any:
+    if isinstance(node, str):
+        return mapping.get(node, node)
+    if isinstance(node, dict):
+        return {k: _replace_strings(v, mapping) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_replace_strings(v, mapping) for v in node]
+    return node
+
+
+class Session:
+    """Routes one Desktop websocket across the workers it needs."""
+
+    def __init__(self, client: Any, pool: WorkerPool, bindings: dict[str, str]) -> None:
+        self.client = client
+        self.pool = pool
+        self.bindings = bindings
+
+        # Requests the workers made of the client. Their ids come from
+        # different app-servers and would otherwise collide, so each is given
+        # one of ours and mapped back when the answer arrives. The table and
+        # counter live on the pool rather than here: the app reconnects
+        # constantly, and an approval asked over one connection is routinely
+        # answered over the next -- a per-connection table would drop that
+        # answer and leave the button doing nothing.
+        self._out = pool.outstanding
+
+        # thread/start responses to watch for, since the id being bound is in
+        # the answer rather than the question.
+        self._starting: dict[Any, tuple[Worker, str | None, dict]] = {}
+
+        # Threads that have been started but have never run a turn. Codex App
+        # opens one of these every time you open a project and abandons it the
+        # moment you type, so claiming a sandbox for each would double the
+        # sandboxes and leave half of them empty. They live on the router's
+        # own app-server until they do something, keyed by the thread/start
+        # params needed to re-create them on a worker of their own.
+        self._draft: dict[str, dict] = {}
+        self._draft_locks: dict[str, asyncio.Lock] = {}
+
+        # A materialized thread has two ids: the one the client was given, and
+        # the one its own worker minted. Every frame is translated between them.
+        self._alias: dict[str, str] = {}     # client id -> worker id
+        self._unalias: dict[str, str] = {}   # worker id -> client id
+
+        # What a message with no thread of its own follows.
+        self.last: Worker | None = None
+
+    # -- client -> worker ---------------------------------------------------
+
+    async def from_client(self, raw: str, msg: dict) -> None:
+        trace("->", msg)
+        if not msg:
+            # Not JSON we understand. The default worker is the only sensible
+            # place for it, and dropping it would hang whatever sent it.
+            await self._send_to(await self.pool.get(DEFAULT_KEY), raw)
+            return
+
+        if "method" not in msg:
+            await self._client_response(msg)
+            return
+        if "id" not in msg:
+            await self._client_notification(raw, msg)
+            return
+        await self._client_request(raw, msg)
+
+    async def _client_response(self, msg: dict) -> None:
+        """An answer to something a worker asked."""
+        entry = self._out.pop(msg.get("id"), None)
+        if entry is None:
+            log("ORPHAN response id=%r" % msg.get("id"))
+            return
+        worker, original = entry
+        reply = dict(msg)
+        reply["id"] = original
+        await self._send_to(worker, json.dumps(reply))
+
+    async def _client_notification(self, raw: str, msg: dict) -> None:
+        method = msg.get("method")
+        # The demux issues initialized to each worker as part of its own
+        # handshake, so the client's would be a second one.
+        if method == "initialized":
+            return
+        if method == "turn/start":
+            raw = force_yolo(raw, msg)
+        if method in TURN_METHODS:
+            tid = thread_id_of(msg)
+            if self._earns_a_sandbox(tid, msg):
+                raw = await self._materialize(tid, raw)
+        worker = await self.route(msg, method)
+        if worker is not None:
+            await self._send_to(worker, raw)
+
+    async def _client_request(self, raw: str, msg: dict) -> None:
+        method = msg.get("method")
+        rid = msg.get("id")
+
+        if method == "initialize":
+            params = msg.get("params")
+            await self.pool.adopt(params if isinstance(params, dict) else {})
+            worker = await self.pool.get(DEFAULT_KEY)
+            log("INITIALIZE answered from %s" % worker.name)
+            await self.send_client(
+                json.dumps({"jsonrpc": "2.0", "id": rid,
+                            "result": self.pool.init_result or {}})
+            )
+            return
+
+        if method == "thread/list":
+            await self._thread_list(raw, msg)
+            return
+
+        if method in ("thread/start", "turn/start"):
+            raw = force_yolo(raw, msg)
+
+        try:
+            if method == "thread/start":
+                # Started on the router's app-server and left there. Most
+                # threads never run a turn, and the ones that do get a sandbox
+                # of their own at that point -- which costs nothing, because a
+                # thread with no turns has written nothing to move.
+                worker = await self.pool.get(DEFAULT_KEY)
+                params = msg.get("params")
+                self._starting[rid] = (worker, None,
+                                       params if isinstance(params, dict) else {})
+            else:
+                if method in TURN_METHODS:
+                    tid = thread_id_of(msg)
+                    if self._earns_a_sandbox(tid, msg):
+                        raw = await self._materialize(tid, raw)
+                worker = await self.route(msg, method)
+        except Exception as exc:  # noqa: BLE001
+            log("ROUTE FAILED %s: %s" % (method, exc))
+            await self.send_client(
+                json.dumps({"jsonrpc": "2.0", "id": rid,
+                            "error": {"code": -32001,
+                                      "message": "codex-router: %s" % exc}})
+            )
+            return
+
+        await self._send_to(worker, raw)
+
+    async def route(self, msg: dict, method: str | None) -> Worker:
+        """Which worker a client message belongs to."""
+        tid = thread_id_of(msg)
+        if tid:
+            worker = await self.for_thread(tid, method)
+            self.last = worker
+            return worker
+
+        # No thread on this message: fs/*, command/exec, gitDiffToRemote and
+        # the rest of the host-scoped calls. They belong to whatever the user
+        # is looking at, and the last thread this connection touched is the
+        # closest thing to that we have.
+        if self.last is not None and self.last.alive():
+            return self.last
+        return await self.pool.get(DEFAULT_KEY)
+
+    async def for_thread(self, tid: str, method: str | None = None) -> Worker:
+        if tid in self._draft:
+            # Started but never run. It lives on the shared worker until it
+            # does something worth a sandbox.
+            return await self.pool.get(DEFAULT_KEY)
+        name = self.bindings.get(tid)
+        if name == "router":
+            return await self.pool.get(DEFAULT_KEY)
+        if name is None:
+            # A thread from before the router, or from a binding an operator
+            # cleared. Its rollout file only exists where it ran, so a fresh
+            # sandbox would be an empty one claiming to be that thread.
+            log("UNBOUND thread=%s (%s) -> local app-server" % (tid, method or "?"))
+            return await self.pool.get(DEFAULT_KEY)
+        return await self.pool.get(tid)
+
+    async def _send_to(self, worker: Worker, raw: str) -> None:
+        worker.sink = self.to_client
+        await worker.send(self._swap(raw, self._alias))
+
+    # -- worker -> client ---------------------------------------------------
+
+    async def to_client(self, raw: str, msg: dict, worker: Worker) -> None:
+        trace("<-", msg, "from=%s" % worker.name)
+        if msg and "method" in msg and "id" in msg:
+            await self._worker_request(msg, worker)
+            return
+        if msg and "method" not in msg:
+            if msg.get("id") in self._starting:
+                raw = await self._thread_started(msg) or raw
+            else:
+                await self._note_new_thread(msg, worker)
+        await self.send_client(raw)
+
+    async def _note_new_thread(self, msg: dict, worker: Worker) -> None:
+        """Claim ids a worker minted without being asked to start a thread.
+
+        `thread/fork` is the one that matters: Codex App forks a thread to send
+        a message, and the fork is a thread the router never saw being created.
+        Its history is on the worker that forked it, so that is where it stays.
+        """
+        result = msg.get("result")
+        thread = result.get("thread") if isinstance(result, dict) else None
+        tid = thread.get("id") if isinstance(thread, dict) else None
+        if not isinstance(tid, str) or not tid:
+            return
+        if tid in self.bindings or tid in self._draft or tid in self._unalias:
+            return
+
+        parent = thread.get("forkedFromId") or thread.get("parentThreadId")
+        parent = self._unalias.get(parent, parent)
+        if parent in self._draft:
+            # Forked from a thread that has not run either, so it has nothing
+            # to keep it here. It earns a sandbox on the same terms.
+            self._draft[tid] = self._draft[parent]
+            log("DRAFT thread=%s forked from %s" % (tid, parent))
+            return
+
+        if isinstance(worker, LocalWorker):
+            # Minted by the router's own app-server, where its history is.
+            # In memory only: an unbound thread routes here anyway, so a
+            # restarted demux does the right thing without a binding file.
+            self.bindings[tid] = worker.name
+            log("BIND thread=%s -> router (minted here)" % tid)
+            return
+
+        self.bindings[tid] = worker.name
+        try:
+            await run_worker_bin("bind", tid, worker.name, worker.host, "", timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            log("BIND FAILED thread=%s worker=%s: %s" % (tid, worker.name, exc))
+        log("BIND thread=%s -> %s (minted there)" % (tid, worker.name))
+
+    async def send_client(self, raw: str) -> None:
+        await self.client.send(self._swap(raw, self._unalias))
+
+    async def _worker_request(self, msg: dict, worker: Worker) -> None:
+        """A worker asking the client something: approvals, elicitations."""
+        rid = self.pool.next_out()
+        self._out[rid] = (worker, msg.get("id"))
+        forwarded = dict(msg)
+        forwarded["id"] = rid
+        await self.send_client(json.dumps(forwarded))
+
+    async def _thread_started(self, msg: dict) -> str | None:
+        """Note a new thread, which is a draft until it runs a turn."""
+        worker, claimed_under, params = self._starting.pop(msg["id"])
+        tid = thread_id_in(msg.get("result"))
+        if not tid:
+            log("START on %s returned no thread id: %s" % (worker.name, str(msg)[:200]))
+            return None
+
+        self._draft[tid] = params
+        log("DRAFT thread=%s on %s%s"
+            % (tid, worker.name,
+               " (ephemeral)" if params.get("ephemeral") else ""))
+        return None
+
+    def _earns_a_sandbox(self, tid: str | None, msg: dict) -> bool:
+        """Whether this turn is the moment a draft becomes a real thread.
+
+        Two kinds of turn do not qualify: turns on ephemeral threads, which are
+        the app's own utility threads (they persist nothing, so nothing they do
+        needs a home), and turns that carry no input, which the app issues on
+        threads it opens and abandons.
+        """
+        params = self._draft.get(tid)
+        if params is None:
+            return False
+        if params.get("ephemeral"):
+            return False
+        return turn_has_work(msg)
+
+    async def _materialize(self, tid: str, raw: str) -> str:
+        """Give a thread that is about to run a turn a sandbox of its own.
+
+        It was started on the shared worker, so a worker of its own has to
+        start it too, and that worker mints an id of its own. The client keeps
+        the id it was given; the two are translated on every frame from here on.
+        """
+        async with self._draft_locks.setdefault(tid, asyncio.Lock()):
+            params = self._draft.pop(tid, None)
+            if params is None:
+                return self._swap(raw, self._alias)
+
+            key = str(uuid.uuid4())
+            worker = await self.pool.get(key)
+            reply = await worker.request("thread/start", params, HANDSHAKE_TIMEOUT)
+            real = thread_id_in(reply.get("result"))
+            if not real:
+                # Without an id of its worker's own there is nothing to route
+                # to, so the thread stays where it was started.
+                log("MATERIALIZE %s failed on %s: %s"
+                    % (tid, worker.name, str(reply)[:200]))
+                self._draft[tid] = params
+                return raw
+
+            self._alias[tid] = real
+            self._unalias[real] = tid
+            self.bindings[tid] = worker.name
+            try:
+                await run_worker_bin(
+                    "bind", tid, worker.name, worker.host, key, timeout=30
+                )
+            except Exception as exc:  # noqa: BLE001
+                log("BIND FAILED thread=%s worker=%s: %s" % (tid, worker.name, exc))
+            log("MATERIALIZE thread=%s -> %s (as %s)" % (tid, worker.name, real))
+            self.last = worker
+            return self._swap(raw, self._alias)
+
+    # -- the two ids every materialized thread has --------------------------
+
+    def _swap(self, raw: str, mapping: dict[str, str]) -> str:
+        """Translate thread ids through a mapping, wherever they appear.
+
+        Thread ids show up in far too many shapes to enumerate, but they are
+        uuids: distinctive enough that swapping every string equal to one is
+        both sufficient and safe.
+        """
+        if not mapping or not any(k in raw for k in mapping):
+            return raw
+        try:
+            return json.dumps(_replace_strings(json.loads(raw), mapping))
+        except (ValueError, TypeError):
+            return raw
+
+    # -- the one call that has to be asked of everyone ----------------------
+
+    async def _thread_list(self, raw: str, msg: dict) -> None:
+        """Merge every connected worker's answer, since each knows only its own.
+
+        Shapes are not assumed: whatever list fields the results have are
+        concatenated, and anything else is taken from the first answer.
+        """
+        workers = self.pool.connected() or [await self.pool.get(DEFAULT_KEY)]
+        # A thread that moved is listed by both the worker it ran on and the
+        # shared worker it was started on, and only the first of those knows
+        # anything about it. Asking the workers that own threads first means
+        # the deduplication below keeps the record with the history in it.
+        owners = set(self.bindings.values())
+        workers.sort(key=lambda w: w.name not in owners)
+        results = await asyncio.gather(
+            *(w.request("thread/list", msg.get("params") or {}, HANDSHAKE_TIMEOUT)
+              for w in workers),
+            return_exceptions=True,
+        )
+
+        merged: dict = {}
+        for reply in results:
+            if isinstance(reply, BaseException) or not isinstance(reply, dict):
+                continue
+            result = reply.get("result")
+            if not isinstance(result, dict):
+                continue
+            for field, value in result.items():
+                if isinstance(value, list):
+                    merged.setdefault(field, []).extend(value)
+                else:
+                    merged.setdefault(field, value)
+
+        # A materialized thread is listed twice -- once by the worker it ran on
+        # and once by the shared worker it was started on -- and both become the
+        # same id once translated.
+        for field, value in merged.items():
+            if isinstance(value, list):
+                merged[field] = _unique_by_id(
+                    _replace_strings(value, self._unalias))
+
+        await self.client.send(
+            json.dumps({"jsonrpc": "2.0", "id": msg.get("id"), "result": merged})
+        )
+
+    def detach(self) -> None:
+        for worker in self.pool.connected():
+            if worker.sink is self.to_client:
+                worker.sink = None
+
+
+async def handle(client: Any, pool: WorkerPool, bindings: dict[str, str]) -> None:
+    log("CONNECT")
+
+    # One client at a time, which is how Codex App uses the app-server: it
+    # reconnects often but never overlaps. Two at once cannot be served from
+    # one set of workers -- a worker sends everything to whichever session
+    # spoke to it last, so replies land in the wrong connection and the request
+    # that is waiting for them never gets an answer. Retiring the older one
+    # makes that a reconnect rather than a hang.
+    global _active
+    if _active is not None and _active is not client:
+        log("REPLACING the client that was connected")
+        with contextlib.suppress(Exception):
+            await _active.close()
+    _active = client
+
+    session = Session(client, pool, bindings)
+    try:
+        async for raw in client:
+            if isinstance(raw, bytes):
+                raw = raw.decode(errors="replace")
+            try:
+                msg = json.loads(raw)
+            except (ValueError, TypeError):
+                msg = {}
+            try:
+                await session.from_client(raw, msg if isinstance(msg, dict) else {})
+            except Exception as exc:  # noqa: BLE001
+                log("HANDLE FAILED: %s" % exc)
+                rid = msg.get("id") if isinstance(msg, dict) else None
+                if rid is not None:
+                    with contextlib.suppress(Exception):
+                        await client.send(json.dumps({
+                            "jsonrpc": "2.0", "id": rid,
+                            "error": {"code": -32603, "message": "codex-router: %s" % exc},
+                        }))
+    except Exception as exc:  # noqa: BLE001 - the client closing is normal
+        log("CLIENT ended: %s" % exc)
+    finally:
+        # The workers outlive the connection: Desktop reconnects constantly,
+        # and tearing their app-servers down would end every thread with it.
+        session.detach()
+        if _active is client:
+            _active = None
+        log("DISCONNECT")
+
+
+async def serve(sock_path: str) -> int:
+    pool = WorkerPool()
+    bindings = load_bindings()
+    log("BINDINGS %d thread(s) known" % len(bindings))
+
+    pid_path = os.path.join(ROUTER_HOME, "run", "demux.pid")
+    os.makedirs(os.path.dirname(pid_path), exist_ok=True)
+    with open(pid_path, "w") as fh:
+        fh.write(str(os.getpid()))
+
+    async def handler(client: Any, *_: Any) -> None:
+        await handle(client, pool, bindings)
+
+    log("LISTEN %s" % sock_path)
+    try:
+        async with unix_serve(
+            handler,
+            sock_path,
+            compression=None,
+            max_size=None,
+            ping_interval=20,
+            ping_timeout=60,
+        ):
+            await asyncio.get_running_loop().create_future()
+    finally:
+        await pool.close_all()
+        with contextlib.suppress(OSError):
+            os.unlink(sock_path)
+    return 0
+
+
+def main() -> int:
+    global _log_file
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--sock", required=True, help="unix socket to listen on")
+    parser.add_argument(
+        "--log",
+        default=os.path.join(ROUTER_HOME, "log", "demux.log"),
+        help="where to write the routing log",
+    )
+    args = parser.parse_args()
+
+    os.makedirs(os.path.dirname(args.log), exist_ok=True)
+    _log_file = open(args.log, "a", buffering=1)
+
+    os.umask(0o077)
+    try:
+        asyncio.run(serve(args.sock))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

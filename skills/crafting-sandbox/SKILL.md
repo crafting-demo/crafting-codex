@@ -1,153 +1,74 @@
 ---
 name: crafting-sandbox
-description: "Use when Codex needs to work with Crafting sandboxes through the `cs` CLI: list or inspect templates, create/resume/show sandboxes, execute commands in sandbox workloads, SSH into workloads, or connect a Crafting sandbox as a local Codex App SSH remote environment for new Codex threads."
+description: "Use whenever the user mentions a Crafting sandbox: creating or spinning up a new one, which sandbox the current thread is in, what sandbox templates exist, or starting and checking Crafting LLM tasks that build things in the background. Creating a sandbox means starting a new thread on the codex-cloud connection, never a CLI command."
 ---
 
 # Crafting Sandbox
 
-Use the Crafting `cs` CLI to create and manage sandbox workspaces, then prepare ready sandboxes for the local Codex App through SSH when the user wants Codex to operate inside that sandbox.
+## The One Rule
 
-Official docs live at https://docs.sandboxes.cloud/. When CLI behavior, sandbox definition schema, template semantics, secrets, SSH access, remote exec, or lifecycle behavior is uncertain or likely current, check those docs before guessing.
+**"Create a new Crafting sandbox" means: create a new thread in the Crafting Sandbox workspace, on the codex-cloud connection.**
 
-## Core Workflow
+"Spin one up", "give me a fresh sandbox", and "new sandbox for this" all mean the same thing. Use your new-chat tool and do it right away -- the request is the go-ahead. Do not ask first, and do not tell the user to press the button themselves.
 
-1. Confirm `cs` is installed and authenticated:
+The workspace and the connection are the whole point. A thread started anywhere else runs on the user's machine and gets no sandbox at all. If that workspace is not available, say so; do not fall back to a local thread.
 
-   ```bash
-   cs login --status || cs login --if-needed
-   ```
+**Never create a sandbox with the `cs` CLI.** Not `cs sb create`, not `cs sandbox create`, not a template command that makes one as a side effect. A sandbox made that way has no thread attached to it and the router knows nothing about it, so it is not the thing the user asked for.
 
-   If `cs` says no organization is selected, use `cs org list` and add `-O ORG` to commands. Folder scopes are uncommon on most Crafting sites; only use `--folder FOLDER` when folder-scoped names fail without it or the site requires folder-scoped addressing.
+Say one sentence afterwards: the chat is ready, and their first message in it lands in a fresh sandbox. The sandbox is claimed on that first message, so do not call it ready before then.
 
-2. Inspect available templates:
+## Speaking To The User
 
-   ```bash
-   cs template list
-   cs template show TEMPLATE
-   cs template show TEMPLATE --def
-   ```
+Most of this is used by voice. Lead with the answer in one short sentence -- the sandbox name, the task's state, how many templates there are -- and offer detail only if asked. Do not read out IDs, hostnames, or tables.
 
-   When choosing a template from a user phrase such as "front-end template", search template names/descriptions. If exactly one plausible match exists, pick it. If multiple plausible matches exist, ask the user to choose. If none are clear, show the closest options and ask.
-
-3. Create a sandbox:
-
-   ```bash
-   cs sb create SANDBOX_NAME -t TEMPLATE --wait
-   ```
-
-   For a direct definition instead of a template:
-
-   ```bash
-   cs sb create SANDBOX_NAME --from def:path/to/definition.yaml --wait
-   ```
-
-   Useful options:
-
-   ```bash
-   --if-exists skip
-   --access private
-   --access shared
-   -E KEY=VALUE
-   -D 'WORKLOAD/env[KEY]=VALUE'
-   -D 'WORKLOAD/checkout[PATH].repo=github:org/repo'
-   ```
-
-4. Inspect sandbox state and addresses:
-
-   ```bash
-   cs sb list
-   cs sb show SANDBOX_NAME
-   cs sb show SANDBOX_NAME --def
-   cs wait sandbox SANDBOX_NAME
-   ```
-
-5. Execute commands in a workload:
-
-   ```bash
-   cs exec -W SANDBOX_NAME/WORKLOAD -- pwd
-   cs exec -W SANDBOX_NAME/WORKLOAD -w REMOTE_PROJECT_DIR -- ls -la
-   cs ssh -W SANDBOX_NAME/WORKLOAD -- 'command -v node || true'
-   ```
-
-   Prefer `cs exec` for simple noninteractive commands. Use `cs ssh` when you need behavior that matches the login shell or when testing the same SSH route the Codex App will use.
-
-6. Prepare the sandbox for the local Codex App when requested:
-
-   ```bash
-   scripts/setup-crafting-codex-remote.sh SANDBOX_NAME [SSH_ALIAS]
-   ```
-
-   If this repo is installed as a Crafting CLI extension, and the sandbox
-   already exists, prefer the friendlier wrapper:
-
-   ```bash
-   cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]
-   cs codex-open SANDBOX_NAME/WORKLOAD --no-install-codex
-   ```
-
-   If the org must be explicit:
-
-   ```bash
-   CODEX_CRAFTING_ORG=ORG scripts/setup-crafting-codex-remote.sh FOLDER/SANDBOX SSH_ALIAS
-   CODEX_CRAFTING_ORG=ORG cs codex-open FOLDER/SANDBOX --workload WORKLOAD --alias SSH_ALIAS
-   ```
-
-   The script creates or updates a concrete `~/.ssh/config` host alias, verifies SSH, verifies or offers to install the remote Codex CLI, logs in from remote auth sources, and runs `codex doctor`.
-   The wrapper resolves folder-scoped sandbox names before treating a slash as `SANDBOX/WORKLOAD`.
-   The setup prefers an existing remote `codex` command and installs `@openai/codex` by default when it is missing.
-   Pass `--no-install-codex` only when remote installation is not acceptable.
-   The `cs codex-open` wrapper then opens Codex Desktop with `codex app`, but it cannot add or enable the remote connection in Codex App settings.
-
-## Remote Codex Auth
-
-The setup script checks, in order:
-
-1. Remote `OPENAI_API_KEY`
-2. Remote `CODEX_ACCESS_TOKEN`
-3. Mounted Crafting secret files:
-
-   ```text
-   /run/sandbox/fs/secrets/shared/shared/openai-key
-   /run/sandbox/fs/secrets/shared/shared/openai-api-key
-   /run/sandbox/fs/secrets/shared/shared/OPENAI-API-KEY
-   /run/sandbox/fs/secrets/shared/openai-key
-   /run/sandbox/fs/secrets/shared/openai-api-key
-   /run/sandbox/fs/secrets/shared/OPENAI-API-KEY
-   /run/sandbox/fs/secrets/openai-key
-   /run/sandbox/fs/secrets/openai-api-key
-   /run/sandbox/fs/secrets/OPENAI-API-KEY
-   ```
-
-If auth is not found, run device auth manually:
+## Which Sandbox Am I In
 
 ```bash
-ssh SSH_ALIAS
-codex login --device-auth
+cat /run/sandbox/fs/metadata/sandbox.json
 ```
 
-## Opening A New Codex Thread On A Sandbox
+`name` is the answer. This file is written live, so it is right even after a sandbox is claimed from the warm pool and renamed. `$SANDBOX_NAME` is baked when the sandbox is built and is stale or empty on a pooled one, and `cs sandbox show` does not report the current sandbox. If the file does not exist, this thread is not running in a sandbox.
 
-When the user asks for a new Codex thread, a new sandbox, or a local Codex App remote environment:
+## Crafting LLM Tasks
 
-1. Create a new sandbox unless the user explicitly points to an existing sandbox. Do not reuse an existing sandbox just because one is convenient.
-2. Wait for the sandbox/workload to be ready, then run `cs codex-open SANDBOX_NAME/WORKLOAD [SSH_ALIAS]` if the extension is installed, or run the remote setup script directly.
-3. Treat successful SSH setup, remote Codex verification, and `codex doctor` as preparation only. Do not claim the sandbox has been added to Codex App.
-4. End by telling the user the SSH alias and the remote project folder reported by the setup output.
-5. Tell the user to open **Codex App -> Settings -> Connections -> SSH**. If the alias is already visible, enable it and choose the remote project folder.
-6. If the alias is not visible, tell the user to add it manually:
+A task is Crafting's own agent working in the background, on its own, separate from this conversation. Use one when the user asks to build or investigate something "as a task", in the background, or while they get on with something else.
 
-   ```text
-   Settings -> Connections -> SSH -> Add
-   Display name: SSH_ALIAS
-   Target mode: Alias
-   Alias: SSH_ALIAS
-   Auth mode: No Auth
-   ```
+```bash
+cs llm session run "THE PROMPT" --task --wait=false -n SESSION_NAME
+```
 
-   Then enable the connection and choose the remote project folder.
+- Pick a short, memorable `SESSION_NAME` from the request, like `add-login-page`, and tell the user what it is.
+- Never drop `--wait=false`. The default blocks until the whole task finishes.
+- `--task` means the task auto-approves its own work and will not stop to ask.
+- Pass the request as a prompt that stands on its own without this conversation.
+- The model is whichever the org gave the `CODING` purpose; there is no model flag.
 
-The script can automate SSH config and remote readiness. The Codex App UI currently owns the final connection registration, enable toggle, and project-folder selection actions. Every sandbox-creation flow for Codex App should finish with the manual settings instructions above. Do not claim the sandbox is connected in the Codex UI unless it has been manually verified.
+Then one sentence: what it is working on, and that you will check when asked.
 
-## References
+## Checking On A Task
 
-For detailed command examples and troubleshooting, read `references/cs-cli.md`.
+```bash
+cs llm session list --status running    # what is still going
+cs llm session print NAME --backward    # newest messages first
+cs llm session cancel NAME              # stop it
+```
+
+If the user does not name the task, `--status running` usually has exactly one; ask which if there are several. Lead with the state -- working, finished, or failed -- then a sentence on what it has done. Do not read the transcript out.
+
+## Listing Templates
+
+```bash
+cs template list
+```
+
+Say how many and name them; group them if there are many. `cs template show TEMPLATE --def` has the detail for one.
+
+Templates are what worker sandboxes are built from. If the user wants one of theirs to work with Codex, `/codexify TEMPLATE` copies it and adds what a worker needs, and `/cr-set-template TEMPLATE` points the router at it. Both run on their Mac from the crafting-codex checkout, not from inside a sandbox.
+
+## Notes
+
+`cs` is already authenticated wherever this runs. Inside a sandbox it acts as the sandbox's owner and the org is implicit; on the user's Mac it acts as them, and may need `-O ORG`.
+
+`references/cs-cli.md` has command detail for inspecting sandboxes and running tasks.
+
+`references/one-sandbox.md` covers the older setup, where the user wires one named sandbox to Codex App by hand and every thread shares it. It only ships on the Mac, since it is all Mac-side work, and it is only for a user who asks about that setup by name. It is never a way to answer The One Rule above.

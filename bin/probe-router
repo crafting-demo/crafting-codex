@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""Drive the router the way Codex App does, and report what answered.
+
+Codex App's remote path is three SSH calls: probe for `codex`, start an
+app-server with `--listen unix://`, then open `codex app-server proxy` and
+speak websocket over its stdio. This does the same three, so a failure here is
+a failure the app would have hit -- without needing the app open to see it.
+
+    bin/probe-router                    against the alias in codex-cloud.conf
+    bin/probe-router --alias codex-cloud
+    bin/probe-router --threads 2        start N threads and show where each ran
+
+The websocket client is written out longhand rather than imported: this is the
+one piece that has to run on someone's Mac before anything is installed, and a
+pip dependency there would be a worse trade than eighty lines of framing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import base64
+import hashlib
+import json
+import os
+import secrets
+import struct
+import subprocess
+import sys
+import time
+
+GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+BOOTSTRAP = (
+    "(pkill -9 -U \"$(id -u)\" -f 'codex.*[d]esktop-ssh-websocket-v0.sock' || true); "
+    "nohup codex -c features.code_mode_host=true app-server --listen unix:// "
+    "> ~/.codex-router/log/app-server.log 2>&1 & sleep 2; echo started"
+)
+
+
+class WebSocket:
+    """A minimal RFC 6455 client over a pair of pipes."""
+
+    def __init__(self, stdin, stdout):
+        self.w = stdin
+        self.r = stdout
+
+    def handshake(self) -> None:
+        key = base64.b64encode(secrets.token_bytes(16)).decode()
+        self.w.write(
+            (
+                "GET / HTTP/1.1\r\n"
+                "Host: localhost\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                f"Sec-WebSocket-Key: {key}\r\n"
+                "Sec-WebSocket-Version: 13\r\n"
+                "\r\n"
+            ).encode()
+        )
+        self.w.flush()
+
+        header = b""
+        while b"\r\n\r\n" not in header:
+            chunk = self.r.read(1)
+            if not chunk:
+                raise RuntimeError("the proxy closed before the handshake: %r" % header)
+            header += chunk
+        status = header.split(b"\r\n", 1)[0].decode(errors="replace")
+        if "101" not in status:
+            raise RuntimeError("handshake refused: %s" % status)
+
+        expect = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
+        if expect.lower().encode() not in header.lower():
+            raise RuntimeError("Sec-WebSocket-Accept did not match")
+
+    def send(self, text: str) -> None:
+        payload = text.encode()
+        mask = secrets.token_bytes(4)
+        head = bytearray([0x81])  # FIN + text
+        n = len(payload)
+        if n < 126:
+            head.append(0x80 | n)
+        elif n < 65536:
+            head.append(0x80 | 126)
+            head += struct.pack("!H", n)
+        else:
+            head.append(0x80 | 127)
+            head += struct.pack("!Q", n)
+        head += mask
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self.w.write(bytes(head) + masked)
+        self.w.flush()
+
+    def _exact(self, n: int) -> bytes:
+        buf = b""
+        while len(buf) < n:
+            chunk = self.r.read(n - len(buf))
+            if not chunk:
+                raise RuntimeError("the proxy closed mid-frame")
+            buf += chunk
+        return buf
+
+    def recv(self) -> str | None:
+        """The next text frame, or None once the peer closes."""
+        while True:
+            b0, b1 = self._exact(2)
+            opcode = b0 & 0x0F
+            masked = bool(b1 & 0x80)
+            n = b1 & 0x7F
+            if n == 126:
+                n = struct.unpack("!H", self._exact(2))[0]
+            elif n == 127:
+                n = struct.unpack("!Q", self._exact(8))[0]
+            mask = self._exact(4) if masked else b""
+            data = self._exact(n)
+            if masked:
+                data = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+
+            if opcode == 0x8:  # close
+                return None
+            if opcode == 0x9:  # ping -- answer it or the server gives up on us
+                self.send_frame(0xA, data)
+                continue
+            if opcode in (0x1, 0x2):
+                return data.decode(errors="replace")
+            # continuation and pong: nothing this probe needs
+
+    def send_frame(self, opcode: int, payload: bytes) -> None:
+        mask = secrets.token_bytes(4)
+        head = bytes([0x80 | opcode, 0x80 | len(payload)]) + mask
+        self.w.write(head + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+        self.w.flush()
+
+
+class Session:
+    def __init__(self, ws: WebSocket, verbose: bool) -> None:
+        self.ws = ws
+        self.verbose = verbose
+        self.next_id = 0
+
+    def call(self, method: str, params: dict | None = None, timeout: float = 120):
+        self.next_id += 1
+        rid = self.next_id
+        self.ws.send(
+            json.dumps({"jsonrpc": "2.0", "id": rid, "method": method,
+                        "params": params or {}})
+        )
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            raw = self.ws.recv()
+            if raw is None:
+                raise RuntimeError("connection closed waiting for %s" % method)
+            msg = json.loads(raw)
+            if self.verbose:
+                print("   <- %s" % raw[:300])
+            if msg.get("method") and "id" in msg:
+                # A server-initiated request. Anything this probe does would be
+                # a guess, so decline and keep waiting for our own answer.
+                self.ws.send(json.dumps({"jsonrpc": "2.0", "id": msg["id"],
+                                         "error": {"code": -32601, "message": "probe"}}))
+                continue
+            if msg.get("id") == rid:
+                if "error" in msg:
+                    raise RuntimeError("%s failed: %s" % (method, msg["error"]))
+                return msg.get("result")
+        raise RuntimeError("timed out waiting for %s" % method)
+
+    def notify(self, method: str, params: dict | None = None) -> None:
+        self.ws.send(json.dumps({"jsonrpc": "2.0", "method": method, "params": params or {}}))
+
+    def turn(self, tid: str, text: str, timeout: float = 300) -> dict:
+        """Run a turn and answer whatever the worker asks along the way.
+
+        Approvals are the interesting part: they are the one thing the worker
+        asks *us*, so they are where a misrouted answer shows up as a button
+        that never resolves.
+        """
+        self.next_id += 1
+        rid = self.next_id
+        self.ws.send(json.dumps({
+            "jsonrpc": "2.0", "id": rid, "method": "turn/start",
+            "params": {"threadId": tid,
+                       "input": [{"type": "text", "text": text}]},
+        }))
+
+        seen: dict = {"approvals": 0, "threads": set(), "answer": None}
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            raw = self.ws.recv()
+            if raw is None:
+                raise RuntimeError("connection closed during the turn")
+            msg = json.loads(raw)
+            if self.verbose:
+                print("   <- %s" % raw[:300])
+
+            tid_seen = (msg.get("params") or {}).get("threadId")
+            if isinstance(tid_seen, str):
+                seen["threads"].add(tid_seen)
+
+            if msg.get("method") and "id" in msg:
+                seen["approvals"] += 1
+                print("   approval asked (%s) -> allowing" % msg["method"])
+                self.ws.send(json.dumps({
+                    "jsonrpc": "2.0", "id": msg["id"],
+                    "result": {"decision": "approved"},
+                }))
+                continue
+
+            if msg.get("method") == "item/completed":
+                item = (msg.get("params") or {}).get("item") or {}
+                if item.get("type") in ("agentMessage", "assistantMessage"):
+                    seen["answer"] = str(item.get("text") or "")[:200]
+
+            if msg.get("id") == rid and "error" in msg:
+                raise RuntimeError("turn failed: %s" % msg["error"])
+
+            # turn/start answers when the turn begins, so the answer to the
+            # question is somewhere in the events that follow.
+            if msg.get("method") in ("turn/completed", "turn/failed"):
+                seen["ended"] = msg["method"]
+                return seen
+        raise RuntimeError("the turn never finished")
+
+
+def ssh(alias: str, command: str, timeout: float = 120) -> str:
+    out = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", alias, "--", command],
+        capture_output=True,
+        timeout=timeout,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(
+            "ssh %s failed (rc=%d): %s"
+            % (alias, out.returncode, out.stderr.decode(errors="replace").strip())
+        )
+    return out.stdout.decode(errors="replace").strip()
+
+
+def alias_from_conf() -> str:
+    conf = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "codex-cloud.conf")
+    if os.path.exists(conf):
+        for line in open(conf):
+            if line.startswith("CODEX_ALIAS="):
+                return line.split("=", 1)[1].strip().strip("'\"")
+    return "codex-cloud"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--alias", default=None, help="the SSH alias Codex App uses")
+    parser.add_argument("--threads", type=int, default=1,
+                        help="how many threads to start")
+    parser.add_argument("--resume", metavar="THREAD_ID", action="append", default=[],
+                        help="resume an existing thread instead of starting one")
+    parser.add_argument("--turn", metavar="TEXT", action="append", default=[],
+                        help="run a turn on each started thread; repeat for more")
+    parser.add_argument("--verbose", action="store_true", help="show every frame")
+    args = parser.parse_args()
+    alias = args.alias or alias_from_conf()
+
+    print(f"1. codex on {alias}")
+    print("   %s" % ssh(alias, "command -v codex && codex --version"))
+
+    print("2. starting the app-server")
+    print("   %s" % ssh(alias, BOOTSTRAP))
+
+    print("3. app-server proxy")
+    proc = subprocess.Popen(
+        ["ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=30", alias, "--",
+         "codex app-server proxy"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        ws = WebSocket(proc.stdin, proc.stdout)
+        ws.handshake()
+        print("   websocket open")
+
+        session = Session(ws, args.verbose)
+        info = session.call("initialize", {
+            "clientInfo": {"name": "probe-router", "title": "probe", "version": "0"},
+        })
+        session.notify("initialized")
+        print("   initialize -> %s" % json.dumps(info)[:200])
+
+        for tid in args.resume:
+            started = time.monotonic()
+            # A thread that never took a turn has no rollout to resume, and the
+            # app-server says so. That is still a useful answer here: it came
+            # from the worker the router chose, which is what is being tested.
+            try:
+                session.call("thread/resume", {"threadId": tid}, timeout=400)
+                outcome = "resumed"
+            except RuntimeError as exc:
+                outcome = "reached its worker, which said: %s" % exc
+            print("   %s %s (%.1fs)" % (tid, outcome, time.monotonic() - started))
+
+        for n in range(args.threads if not args.resume else 0):
+            started = time.monotonic()
+            thread = session.call("thread/start", {"cwd": "/home/owner"}, timeout=400)
+            tid = (thread or {}).get("thread", {}).get("id") or (thread or {}).get("threadId")
+            print("   thread %d -> %s (%.1fs)" % (n + 1, tid, time.monotonic() - started))
+
+            for i, text in enumerate(args.turn, start=1):
+                started = time.monotonic()
+                seen = session.turn(tid, text)
+                print("   turn %d: %d approval(s), %.1fs" %
+                      (i, seen["approvals"], time.monotonic() - started))
+                if seen.get("answer"):
+                    print("     answer: %s" % seen["answer"].replace("\n", " ")[:120])
+                others = [t for t in seen["threads"] if t != tid]
+                if others:
+                    print("     OTHER THREAD IDS SEEN: %s" % ", ".join(sorted(others)))
+
+        print()
+        print("Where the threads landed (from the router):")
+        print(ssh(alias, "~/.codex-router/bin/codexctl threads"))
+    finally:
+        proc.stdin.close()
+        proc.terminate()
+        err = proc.stderr.read().decode(errors="replace").strip()
+        if err:
+            print("\nssh stderr:\n%s" % err, file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

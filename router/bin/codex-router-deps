@@ -1,0 +1,66 @@
+#!/bin/bash
+#
+# Put a Python that can import websockets on the router, and record which one.
+#
+# The demux is the only piece with a dependency outside the base image, and it
+# is also the piece that has no fallback if the dependency is missing -- so
+# this tries the three ways a sandbox might allow it rather than assuming one.
+# Debian's python3 ships without ensurepip, which is enough to make the obvious
+# `python3 -m venv` route fail on an image that otherwise looks fine.
+#
+# The interpreter that wins is written to etc/python, which is what the shim
+# starts the demux with.
+#
+set -uo pipefail
+
+ROUTER_HOME="${CODEX_ROUTER_HOME:-/home/owner/.codex-router}"
+VENV="$ROUTER_HOME/venv"
+LOG_FILE="$ROUTER_HOME/log/deps.log"
+RECORD="$ROUTER_HOME/etc/python"
+
+mkdir -p "$ROUTER_HOME/log" "$ROUTER_HOME/etc"
+
+log() {
+  printf '%s [deps] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" \
+    | tee -a "$LOG_FILE"
+}
+
+works() { [ -x "$1" ] && "$1" -c 'import websockets' >/dev/null 2>&1; }
+
+# 1. A virtualenv of our own, where the platform's Python can build one.
+if [ ! -x "$VENV/bin/python3" ] || ! works "$VENV/bin/python3"; then
+  rm -rf "$VENV"
+  if python3 -m venv "$VENV" >>"$LOG_FILE" 2>&1 && [ -x "$VENV/bin/pip" ]; then
+    "$VENV/bin/pip" install --quiet --upgrade websockets >>"$LOG_FILE" 2>&1
+  fi
+fi
+
+# 2. uv, which carries its own package installer and needs no ensurepip.
+if ! works "$VENV/bin/python3" && command -v uv >/dev/null 2>&1; then
+  log "falling back to uv"
+  rm -rf "$VENV"
+  uv venv "$VENV" >>"$LOG_FILE" 2>&1 \
+    && uv pip install --python "$VENV/bin/python3" websockets >>"$LOG_FILE" 2>&1
+fi
+
+if works "$VENV/bin/python3"; then
+  printf '%s' "$VENV/bin/python3" > "$RECORD"
+  log "using $VENV/bin/python3"
+  exit 0
+fi
+
+# 3. The system interpreter. --break-system-packages is what a PEP 668 image
+# wants to hear, and older pips reject the flag outright, so both are tried.
+log "falling back to the system interpreter"
+SYS="$(command -v python3)"
+pip3 install --quiet --user websockets >>"$LOG_FILE" 2>&1 \
+  || pip3 install --quiet --user --break-system-packages websockets >>"$LOG_FILE" 2>&1
+
+if works "$SYS"; then
+  printf '%s' "$SYS" > "$RECORD"
+  log "using $SYS"
+  exit 0
+fi
+
+log "FAILED: no interpreter here can import websockets"
+exit 1

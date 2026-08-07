@@ -44,37 +44,72 @@ Selection heuristic:
 
 ## Sandboxes
 
+These read and control sandboxes that already exist:
+
 ```bash
 cs sb list
 cs sb show SANDBOX
 cs sb show SANDBOX --def
-cs sb create SANDBOX -t TEMPLATE --wait
-cs sb create SANDBOX --from def:definition.yaml --wait
-cs sb create SANDBOX --from scratch
 cs sb resume SANDBOX --wait
 cs sb suspend SANDBOX
 cs wait sandbox SANDBOX
 ```
 
-Common create options:
+There is deliberately no create command here. A new Crafting sandbox is a new
+thread in the Crafting Sandbox workspace, per the One Rule in `SKILL.md`. The
+one case that still creates one by CLI is the old Mac-side setup, and it is
+documented there rather than here.
+
+## LLM Tasks And Sessions
 
 ```bash
---if-exists skip
---access shared
---access private
---access collaborated:users=user@example.com
--E KEY=VALUE
--D 'app/env[KEY]=VALUE'
--D 'app/checkout[src].repo=github:org/repo'
--D 'app/checkout[src].version=main'
+cs llm session run "PROMPT" --task --wait=false -n NAME
+cs llm session run @prompt.txt --task --wait=false -n NAME
+cs llm session run "PROMPT" --task --wait=false -n NAME -W SANDBOX/WORKSPACE
+cs llm session list
+cs llm session list --status running
+cs llm session list --created-since=-1h
+cs llm session print NAME
+cs llm session print NAME --backward --print json
+cs llm session watch NAME
+cs llm session resume NAME "FOLLOW UP"
+cs llm session cancel NAME
+cs llm session remove NAME -f
 ```
 
-Minimal direct definition with one workspace:
+Flags on `run` worth knowing:
 
-```yaml
-workspaces:
-  - name: app
+- `--wait` defaults to true and blocks until the task finishes. Always pass `--wait=false` for background work.
+- `--task` archives the session when it completes and sets approval to auto. `--interactive` keeps it resumable instead.
+- `--resume-if-exist` reuses the named session rather than failing.
+- `--agent`, `--allow-template`, `--exclude-template` constrain what the agent may use.
+- `--initiator EMAIL` records who asked, useful when the caller is a service account.
+
+There is no `--model` flag. The model comes from the org's LLM configuration by purpose:
+
+```bash
+cs llm config models list
+cs llm config providers list
 ```
+
+The model marked `CODING` is what coding tasks use.
+
+Status lives at `content.status.state` (`RUNNING` or `STOPPED`) in `-o json` output:
+
+```bash
+cs llm session list -o json | jq -r '.[] | "\(.meta.name) \(.content.status.state)"'
+```
+
+## Sandbox Identity From Inside
+
+```bash
+cat /run/sandbox/fs/metadata/sandbox.json   # id, name, fullName
+ls /run/sandbox/fs/metadata/                # owner.json, template.json, app-domain
+```
+
+`$SANDBOX_NAME` and the other `SANDBOX_*` variables are set when the sandbox image is built, so a sandbox claimed from a pool and renamed reports a stale or empty name. The metadata file is live and is the reliable source.
+
+Inside a sandbox, `cs` is authenticated as the sandbox owner and the org is implicit; `-O ORG` is not needed and `cs info` shows which identity it is.
 
 ## Commands In Workloads
 
@@ -87,46 +122,5 @@ cs ssh -W SANDBOX/WORKLOAD -- 'whoami; hostname; pwd'
 
 Use `cs exec` for deterministic noninteractive command execution. Use `cs ssh` when checking login-shell PATH or testing the same path OpenSSH/Codex App will use.
 
-## OpenSSH And Codex App
-
-Codex App discovers concrete aliases from `~/.ssh/config`; pattern-only Crafting host entries are not enough. A working alias looks like:
-
-```sshconfig
-Host SSH_ALIAS
-  HostName WORKLOAD_SSH_HOST
-  Port 22
-  User owner
-  ProxyCommand ~/.crafting/sandbox/cli/current/bin/cs ssh-proxy %h:443
-  UserKnownHostsFile ~/.crafting/sandbox/known_hosts
-  StrictHostKeyChecking yes
-  HashKnownHosts no
-  IdentityFile ~/.crafting/sandbox/id_client
-```
-
-Verify:
-
-```bash
-ssh SSH_ALIAS -- 'whoami; hostname; command -v codex; codex --version'
-ssh SSH_ALIAS -- 'codex doctor --summary --ascii'
-```
-
-## Remote Setup Script
-
-Run from the Mac where Codex App is installed:
-
-```bash
-skills/crafting-sandbox/scripts/setup-crafting-codex-remote.sh SANDBOX_NAME [SSH_ALIAS]
-```
-
-Useful environment variables:
-
-```bash
-CODEX_CRAFTING_ORG=eng
-CODEX_CRAFTING_WORKLOAD=WORKLOAD
-CODEX_CRAFTING_REMOTE_USER=owner
-CODEX_CRAFTING_PROJECT_DIR=REMOTE_PROJECT_DIR
-CODEX_CRAFTING_SECRET_PATH=/run/sandbox/fs/secrets/shared/shared/openai-key
-CODEX_CRAFTING_SKIP_LOGIN=1
-```
-
-The script may prompt to install Node.js, npm, and `@openai/codex` if remote `codex` is not on PATH.
+SSH aliases, the remote setup script, and the rest of the Mac-side wiring live
+in `references/one-sandbox.md`.

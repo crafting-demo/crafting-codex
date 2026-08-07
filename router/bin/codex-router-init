@@ -1,0 +1,144 @@
+#!/bin/bash
+#
+# Brings the router up and keeps it up. Runs as root from the workspace's
+# system.daemons entry, so it survives restarts and resumes.
+#
+# Two jobs:
+#   1. authenticate `cs` as the service account, so the demux can claim workers
+#      without a human forwarding their session socket
+#   2. keep the shim installed in front of the real codex CLI
+#
+# The second is a loop rather than a one-shot because Codex App installs the
+# CLI itself when it does not find one, which would quietly replace the shim
+# and send every thread back to running on the router.
+#
+set -uo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/home/owner/.local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/sandboxd/bin"
+
+ROUTER_HOME="${CODEX_ROUTER_HOME:-/home/owner/.codex-router}"
+ETC_DIR="$ROUTER_HOME/etc"
+LOG_DIR="$ROUTER_HOME/log"
+RUN_DIR="$ROUTER_HOME/run"
+LOG_FILE="$LOG_DIR/init.log"
+
+# Where Codex App looks first: it prepends ${CODEX_INSTALL_DIR:-$HOME/.local/bin}
+# to PATH before running any codex command, so this is the name that has to be
+# ours.
+SHIM_PATH="${CODEX_INSTALL_DIR:-/home/owner/.local/bin}/codex"
+REAL_PATH="$ROUTER_HOME/bin/codex.real"
+INTERVAL="${CODEX_ROUTER_WATCH_INTERVAL:-5}"
+
+mkdir -p "$ETC_DIR" "$LOG_DIR" "$RUN_DIR" "$ROUTER_HOME/threads"
+chown -R owner:owner "$ROUTER_HOME" 2>/dev/null || true
+chmod 700 "$ETC_DIR"
+
+# This daemon runs as root and starts while on_create is still installing the
+# CLI. Anything it creates on the way to the shim's directory would be owned by
+# root, and npm reports that as a permissions error rather than as a directory
+# it cannot write -- so hand the whole path back to owner.
+BIN_DIR="$(dirname "$SHIM_PATH")"
+mkdir -p "$BIN_DIR"
+for d in "$BIN_DIR" "$(dirname "$BIN_DIR")"; do
+  case "$d" in /home/owner/*) chown owner:owner "$d" 2>/dev/null || true ;; esac
+done
+
+# shellcheck disable=SC1091
+[ -f "$ROUTER_HOME/config" ] && . "$ROUTER_HOME/config"
+
+log() {
+  printf '%s [init] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*" \
+    >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# The identity the router claims workers as
+#
+# server_url has to be set first: with no config, `cs` inside a sandbox talks
+# to the system over plain HTTP and the token exchange fails with
+# "server gave HTTP response to HTTPS client".
+# ---------------------------------------------------------------------------
+
+cs_login() {
+  [ -f "$ETC_DIR/cs-login-token" ] || { log "no login token rendered; cs stays unauthenticated"; return 0; }
+  local url token
+  url="${CODEX_ROUTER_SERVER_URL:-${SANDBOX_SYSTEM_URL:-}}"
+  token="$(tr -d '[:space:]' < "$ETC_DIR/cs-login-token")"
+  [ -n "$token" ] && [ -n "$url" ] || { log "login token or server url missing"; return 0; }
+
+  su - owner -c "/opt/sandboxd/bin/cs config set server_url '$url'" >> "$LOG_FILE" 2>&1
+  if su - owner -c "/opt/sandboxd/bin/cs login -t '$token'" >> "$LOG_FILE" 2>&1; then
+    log "cs login ok"
+  else
+    log "cs login FAILED"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# The shim
+# ---------------------------------------------------------------------------
+
+is_shim() { head -c 200 "$1" 2>/dev/null | grep -q 'codex-router shim'; }
+
+# A download or an npm install in progress looks exactly like a new binary.
+# Only touch a file once its size has stopped changing, or the real CLI would
+# be moved aside half-written and lost.
+settled() {
+  local f="$1" a b
+  a="$(stat -c %s "$f" 2>/dev/null || echo x)"
+  sleep 2
+  b="$(stat -c %s "$f" 2>/dev/null || echo y)"
+  [ "$a" = "$b" ] && [ -s "$f" ]
+}
+
+install_shim() {
+  [ -e "$SHIM_PATH" ] || return 1
+
+  if is_shim "$SHIM_PATH"; then
+    # Already ours, but refresh in case the shim itself was updated by a
+    # template change.
+    if ! cmp -s "$ROUTER_HOME/bin/codex-shim" "$SHIM_PATH"; then
+      cp -f "$ROUTER_HOME/bin/codex-shim" "$SHIM_PATH"
+      chmod 755 "$SHIM_PATH"
+      chown owner:owner "$SHIM_PATH" 2>/dev/null || true
+      log "refreshed the shim"
+    fi
+    return 0
+  fi
+
+  settled "$SHIM_PATH" || { log "waiting for $SHIM_PATH to finish being written"; return 1; }
+
+  local real
+  if [ -L "$SHIM_PATH" ]; then
+    # npm installs the CLI as a symlink into node_modules, and a relative one:
+    # moving it aside leaves a link pointing at nothing. Only the name on PATH
+    # has to become ours, so record where it pointed and drop the link.
+    real="$(readlink -f "$SHIM_PATH")"
+    [ -x "$real" ] || { log "symlinked CLI resolves to nothing usable: $real"; return 1; }
+    rm -f "$SHIM_PATH"
+  else
+    real="$REAL_PATH"
+    mv -f "$SHIM_PATH" "$real"
+    chmod 755 "$real"
+  fi
+
+  printf '%s' "$real" > "$ETC_DIR/codex-real"
+  cp -f "$ROUTER_HOME/bin/codex-shim" "$SHIM_PATH"
+  chmod 755 "$SHIM_PATH"
+  chown owner:owner "$SHIM_PATH" "$ETC_DIR/codex-real" 2>/dev/null || true
+  chown owner:owner "$real" 2>/dev/null || true
+  log "shimmed $SHIM_PATH (real -> $real)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+
+log "started"
+cs_login
+
+# The CLI arrives from on_create, which is still running the first time this
+# daemon starts, so the first pass usually has nothing to do.
+while true; do
+  install_shim >/dev/null 2>&1
+  sleep "$INTERVAL"
+done

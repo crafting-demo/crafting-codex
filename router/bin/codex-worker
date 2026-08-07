@@ -1,0 +1,84 @@
+#!/bin/bash
+#
+# Everything the demux needs from Crafting and SSH, kept out of the demux
+# itself so the Python side only has to speak JSON-RPC.
+#
+#   codex-worker name <key>            the sandbox name a routing key maps to
+#   codex-worker resolve <key>         claim/resume it, print "<name> <host>"
+#   codex-worker bind <key> <n> <host> point a key at a worker already claimed
+#   codex-worker up <host> <port>      start its app-server, then hold the tunnel
+#   codex-worker invalidate <key>      force the next resolve onto the slow path
+#
+# `up` runs in the foreground for as long as the tunnel should live: the demux
+# starts one per worker and kills it when that worker goes away.
+#
+set -uo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/home/owner/.local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/sandboxd/bin"
+export HOME="${HOME:-/home/owner}"
+
+ROUTER_HOME="${CODEX_ROUTER_HOME:-/home/owner/.codex-router}"
+LOG_FILE="$ROUTER_HOME/log/worker.log"
+
+mkdir -p "$ROUTER_HOME/log" 2>/dev/null || true
+
+# stdout carries the answer the demux parses, so every diagnostic goes to the
+# log file instead.
+log() {
+  printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" "$$" "$*" \
+    >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# shellcheck disable=SC1091
+. "$ROUTER_HOME/lib/worker.sh"
+
+cmd="${1:-}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  name)
+    worker_name_for "${1:?usage: codex-worker name <key>}"
+    ;;
+
+  resolve)
+    key="${1:?usage: codex-worker resolve <key>}"
+    out="$(resolve_worker "$key")"
+    [ -n "$out" ] || { log "RESOLVE FAILED key=$key"; exit 1; }
+    printf '%s\n' "$out"
+    ;;
+
+  bind)
+    key="${1:?usage: codex-worker bind <key> <name> <host> [claimed-under]}"
+    bind_worker "$key" "${2:?missing name}" "${3:?missing host}" "${4:-}"
+    log "BIND key=$key name=$2 claimed_under=${4:-}"
+    ;;
+
+  invalidate)
+    invalidate_worker "${1:?usage: codex-worker invalidate <key>}"
+    ;;
+
+  up)
+    host="${1:?usage: codex-worker up <host> <local-port>}"
+    lport="${2:?usage: codex-worker up <host> <local-port>}"
+
+    if ! worker_app_server "$host"; then
+      rc=$?
+      case "$rc" in
+        3) log "UP host=$host -- no codex CLI on the worker" ;;
+        4) log "UP host=$host -- app-server did not start listening" ;;
+        *) log "UP host=$host -- ssh failed rc=$rc" ;;
+      esac
+      exit "$rc"
+    fi
+
+    log "TUNNEL host=$host 127.0.0.1:$lport -> 127.0.0.1:$WORKER_PORT"
+    worker_ssh_args own
+    exec ssh "${WORKER_SSH_ARGS[@]}" \
+      -N -L "127.0.0.1:$lport:127.0.0.1:$WORKER_PORT" "owner@$host"
+    ;;
+
+  *)
+    sed -n '3,12p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

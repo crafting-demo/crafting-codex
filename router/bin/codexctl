@@ -1,0 +1,152 @@
+#!/bin/bash
+#
+# Operator tool for the router, run from inside the router sandbox.
+#
+#   codexctl status              overview: shim, demux, auth, bindings
+#   codexctl mode [route|local]  show or set where threads run
+#   codexctl threads             the thread -> worker bindings
+#   codexctl log [-f|N]          the demux's routing log
+#   codexctl shim-log [N]        what the shim intercepted
+#   codexctl unbind <key|all>    forget a binding (does not delete sandboxes)
+#   codexctl reap <name|all>     delete worker sandboxes
+#   codexctl restart             drop the demux so the next connect rebuilds it
+#   codexctl yolo [on|off]       approvals off + full access on every thread (default on)
+#
+set -uo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/home/owner/.local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/sandboxd/bin"
+
+ROUTER_HOME="${CODEX_ROUTER_HOME:-/home/owner/.codex-router}"
+LOG_DIR="$ROUTER_HOME/log"
+RUN_DIR="$ROUTER_HOME/run"
+MODE_FILE="$ROUTER_HOME/mode"
+
+# shellcheck disable=SC1091
+. "$ROUTER_HOME/lib/worker.sh"
+
+# Everything but the binding files themselves: the siblings are the resolution
+# cache, and the index is a log rather than a mapping.
+bindings() {
+  [ -d "$THREADS_DIR" ] || return 0
+  find "$THREADS_DIR" -maxdepth 1 -type f ! -name '*.host' ! -name '*.ok' \
+    -printf '%f\n' 2>/dev/null | sort
+}
+
+cmd="${1:-status}"
+shift 2>/dev/null || true
+
+case "$cmd" in
+  mode)
+    if [ $# -gt 0 ]; then
+      case "$1" in
+        route|local) printf '%s' "$1" > "$MODE_FILE"; echo "mode=$1" ;;
+        *) echo "mode must be 'route' or 'local'" >&2; exit 1 ;;
+      esac
+      echo "Reconnect from Codex App for this to take effect."
+    else
+      echo "mode=$(cat "$MODE_FILE" 2>/dev/null || echo route)"
+    fi
+    ;;
+
+  threads)
+    if [ -n "$(bindings)" ]; then
+      printf '%-40s %-16s %s\n' THREAD WORKER STATE
+      while read -r key; do
+        [ -n "$key" ] || continue
+        name="$(cat "$THREADS_DIR/$key" 2>/dev/null)"
+        printf '%-40s %-16s %s\n' "$key" "$name" "$(sandbox_state "$name")"
+      done <<< "$(bindings)"
+    else
+      echo "no thread bindings"
+    fi
+    ;;
+
+  log)
+    [ "${1:-}" = "-f" ] && exec tail -f "$LOG_DIR/demux.log"
+    tail -n "${1:-80}" "$LOG_DIR/demux.log" 2>/dev/null
+    ;;
+
+  trace)
+    case "${1:-}" in
+      on)  : > "$ROUTER_HOME/trace"; echo "trace on" ;;
+      off) rm -f "$ROUTER_HOME/trace"; echo "trace off" ;;
+      *)   [ -f "$ROUTER_HOME/trace" ] && echo "trace on" || echo "trace off"; exit 0 ;;
+    esac
+    echo "Reconnect from Codex App for this to take effect."
+    ;;
+
+  yolo)
+    # Takes effect on the next thread or turn; the demux reads the file live.
+    case "${1:-}" in
+      on)  rm -f "$ROUTER_HOME/yolo"; echo "yolo on (approvals off, full access)" ;;
+      off) printf 'off' > "$ROUTER_HOME/yolo"; echo "yolo off (threads keep the app's own policy)" ;;
+      *)   [ "$(cat "$ROUTER_HOME/yolo" 2>/dev/null)" = off ] && echo "yolo off" || echo "yolo on" ;;
+    esac
+    ;;
+
+  shim-log) tail -n "${1:-80}" "$LOG_DIR/shim.log" 2>/dev/null ;;
+
+  unbind)
+    [ $# -ge 1 ] || { echo "usage: codexctl unbind <key|all>" >&2; exit 1; }
+    if [ "$1" = all ]; then
+      rm -f "$THREADS_DIR"/*
+      echo "all bindings cleared"
+    else
+      rm -f "$THREADS_DIR/$1" "$THREADS_DIR/$1.host" "$THREADS_DIR/$1.ok"
+      echo "unbound $1"
+    fi
+    ;;
+
+  reap)
+    [ $# -ge 1 ] || { echo "usage: codexctl reap <name|all>" >&2; exit 1; }
+    if [ "$1" = all ]; then
+      for n in $(cs sandbox list -o json 2>/dev/null \
+                 | jq -r ".[]? | select(.meta.name | startswith(\"$NAME_PREFIX-\")) | .meta.name"); do
+        echo "removing $n"
+        cs sandbox remove "$n" -f --skip-non-exist 2>&1 | tail -1
+      done
+      rm -f "$THREADS_DIR"/*
+    else
+      cs sandbox remove "$1" -f --skip-non-exist 2>&1 | tail -1
+      grep -rl "^$1\$" "$THREADS_DIR" 2>/dev/null | xargs -r rm -f
+    fi
+    ;;
+
+  restart)
+    pid="$(cat "$RUN_DIR/demux.pid" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill -TERM "$pid"
+      echo "stopped the demux (pid $pid)"
+    else
+      echo "the demux was not running"
+    fi
+    echo "Reconnect from Codex App; its bootstrap starts a new one."
+    ;;
+
+  status)
+    shim="${CODEX_INSTALL_DIR:-/home/owner/.local/bin}/codex"
+    if head -c 200 "$shim" 2>/dev/null | grep -q 'codex-router shim'; then
+      echo "shim:    installed at $shim"
+    else
+      echo "shim:    NOT INSTALLED at $shim -- check $LOG_DIR/init.log"
+    fi
+    echo "real:    $(cat "$ROUTER_HOME/etc/codex-real" 2>/dev/null || echo '<unknown>')"
+    echo "mode:    $(cat "$MODE_FILE" 2>/dev/null || echo route)"
+    echo "yolo:    $([ "$(cat "$ROUTER_HOME/yolo" 2>/dev/null)" = off ] && echo off || echo on)"
+    pid="$(cat "$RUN_DIR/demux.pid" 2>/dev/null)"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      echo "demux:   running (pid $pid)"
+    else
+      echo "demux:   not running (Codex App starts it on connect)"
+    fi
+    # `cs info` reports on stderr, and no `head` in this pipeline: it would
+    # SIGPIPE `cs` and pipefail would turn a good answer into a failure.
+    echo "cs auth: $(env -u CRAFTING_SESSION_SOCK -u CRAFTING_SESSION_ID "$CS_BIN" info 2>&1 \
+      | awk -F': *' '/Email:/ && !seen {print $2; seen=1}')"
+    echo "threads: $(bindings | grep -c . || true)"
+    echo
+    "$0" threads
+    ;;
+
+  *) sed -n '3,14p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

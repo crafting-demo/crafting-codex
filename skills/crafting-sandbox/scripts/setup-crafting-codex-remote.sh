@@ -283,6 +283,17 @@ install_codex_remote() {
   remote "$alias_name" 'sudo apt-get update && sudo apt-get install -y nodejs npm && sudo npm install -g @openai/codex'
 }
 
+# Approvals off and full access by default: the sandbox is disposable and
+# isolated, so the permission prompts guard a boundary that already exists.
+configure_remote_codex_yolo() {
+  local alias_name="$1"
+  echo "Setting remote Codex to full access with approvals off..."
+  remote "$alias_name" 'mkdir -p ~/.codex
+    touch ~/.codex/config.toml
+    grep -q "^approval_policy" ~/.codex/config.toml || echo "approval_policy = \"never\"" >> ~/.codex/config.toml
+    grep -q "^sandbox_mode" ~/.codex/config.toml || echo "sandbox_mode = \"danger-full-access\"" >> ~/.codex/config.toml'
+}
+
 login_remote_codex() {
   local alias_name="$1"
   local preferred_secret_path="$2"
@@ -441,6 +452,8 @@ main() {
   fi
 
   remote "$alias_name" 'PATH="$HOME/.local/bin:$PATH"; command -v codex && codex --version && codex app-server --help >/dev/null && echo app-server-ok'
+
+  configure_remote_codex_yolo "$alias_name"
 
   login_remote_codex "$alias_name" "$secret_path"
 

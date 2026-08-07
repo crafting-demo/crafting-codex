@@ -1,0 +1,177 @@
+#!/bin/bash
+# codex-router shim -- marker line, codex-router-init greps for this
+#
+# Stands in for the Codex CLI on the router sandbox, installed at the path
+# Codex Desktop puts first on PATH ($HOME/.local/bin/codex) with the real
+# binary moved to $ROUTER_HOME/bin/codex.real.
+#
+# Desktop drives a remote environment with exactly three kinds of call, and only
+# two of them are ours:
+#
+#   codex --version                     a probe, and the minimum-version check
+#   codex ... app-server --listen URL    starts the one app-server for the host
+#   codex app-server proxy               a byte pipe from ssh stdio to its socket
+#
+# Everything a thread does is JSON-RPC multiplexed over that one proxy
+# connection, so the socket is where per-thread routing has to happen. The shim
+# puts the demux on the listening end and points the proxy at it; the demux then
+# speaks to one app-server per thread, each in its own worker sandbox.
+#
+# stdout on the proxy path is the app's byte stream. Nothing may be written to
+# it: diagnostics go to the log file or stderr.
+#
+set -uo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/local/go/bin:/usr/local/node/bin:/home/owner/.local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/sandboxd/bin"
+export HOME="${HOME:-/home/owner}"
+
+ROUTER_HOME="${CODEX_ROUTER_HOME:-/home/owner/.codex-router}"
+LOG_FILE="$ROUTER_HOME/log/shim.log"
+MODE_FILE="$ROUTER_HOME/mode"
+RUN_DIR="$ROUTER_HOME/run"
+
+# Named for what Desktop expects to kill. Its bootstrap runs
+#   pkill -9 -U $(id -u) -f 'codex.*[d]esktop-ssh-websocket-v0.sock'
+# before starting the app-server, so putting that string in the demux's socket
+# path -- and therefore in its command line -- makes Desktop's own restart
+# cycle clean up the previous demux for us.
+DEMUX_SOCK="$RUN_DIR/desktop-ssh-websocket-v0.sock"
+
+mkdir -p "$ROUTER_HOME/log" "$RUN_DIR" 2>/dev/null || true
+
+log() {
+  printf '%s [%s] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%S.%3NZ')" "$$" "$*" \
+    >> "$LOG_FILE" 2>/dev/null || true
+}
+
+# The real CLI, recorded when the shim was installed. The fallback search skips
+# anything that is a shim, so a half-finished install cannot make this exec
+# itself.
+REAL="${CODEX_ROUTER_REAL:-}"
+if [ -z "$REAL" ] && [ -r "$ROUTER_HOME/etc/codex-real" ]; then
+  REAL="$(cat "$ROUTER_HOME/etc/codex-real" 2>/dev/null)"
+fi
+if [ -z "$REAL" ] || [ ! -x "$REAL" ]; then
+  for candidate in \
+    "$ROUTER_HOME/bin/codex.real" \
+    "$HOME/.local/lib/node_modules/@openai/codex/bin/codex.js" \
+    /usr/local/bin/codex \
+    /usr/bin/codex
+  do
+    [ -x "$candidate" ] || continue
+    head -c 200 "$candidate" 2>/dev/null | grep -q 'codex-router shim' && continue
+    REAL="$candidate"
+    break
+  done
+fi
+
+if [ -z "$REAL" ] || [ ! -x "$REAL" ]; then
+  log "FATAL real codex not found"
+  echo "codex-router: the real codex CLI could not be found" >&2
+  exit 127
+fi
+
+# ---------------------------------------------------------------------------
+# What is being asked for
+#
+# The subcommand is not simply $1: Desktop's bootstrap passes `-c key=value`
+# before it, and `--listen` takes a value that must not be mistaken for one.
+# ---------------------------------------------------------------------------
+
+subcmd=""
+subsub=""
+has_listen=0
+skip=0
+for arg in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$arg" in
+    --listen) has_listen=1; skip=1; continue ;;
+    --stdio)  has_listen=1; continue ;;
+    -c|--config|--enable|--disable|--code-mode-host|--sock|--ws-auth|--ws-token-file|\
+    --ws-token-sha256|--ws-shared-secret-file|--ws-issuer|--ws-audience|--ws-max-clock-skew-seconds)
+      skip=1; continue ;;
+    -*) continue ;;
+    *)
+      if   [ -z "$subcmd" ]; then subcmd="$arg"
+      elif [ -z "$subsub" ]; then subsub="$arg"
+      fi
+      ;;
+  esac
+done
+
+MODE="$(cat "$MODE_FILE" 2>/dev/null || echo route)"
+
+# `local` runs the whole environment on the router, as an ordinary single
+# sandbox would. It is the fallback while the routing layer is being worked on,
+# and what doctor.sh tells you to set if the demux is the thing that is broken.
+if [ "$MODE" != "route" ] || [ "$subcmd" != "app-server" ]; then
+  [ "$subcmd" = "app-server" ] && log "LOCAL mode=$MODE argv=$*"
+  exec "$REAL" "$@"
+fi
+
+# ---------------------------------------------------------------------------
+# app-server proxy: point the byte pipe at the demux instead of the socket the
+# real app-server would have opened.
+#
+# The real CLI still does the proxying, so nothing here has to understand the
+# framing that rides over it.
+# ---------------------------------------------------------------------------
+
+if [ "$subsub" = "proxy" ]; then
+  case " $* " in
+    *" --sock "*) log "PROXY passthrough (explicit --sock) argv=$*"; exec "$REAL" "$@" ;;
+  esac
+  if [ ! -S "$DEMUX_SOCK" ]; then
+    log "PROXY no demux socket at $DEMUX_SOCK"
+    echo "codex-router: the demux is not listening; check 'codexctl status'" >&2
+    exit 1
+  fi
+  log "PROXY -> $DEMUX_SOCK"
+  exec "$REAL" "$@" --sock "$DEMUX_SOCK"
+fi
+
+# ---------------------------------------------------------------------------
+# app-server --listen: become the demux.
+#
+# Desktop has already backgrounded this command with nohup, so exec'ing the
+# demux here leaves it as that background process -- which is exactly the
+# lifetime Desktop expects the app-server to have.
+# ---------------------------------------------------------------------------
+
+if [ "$has_listen" = 1 ]; then
+  # Desktop's pkill should already have taken the previous demux, but it only
+  # matches on a command line we do not control. Retiring it by pidfile as well
+  # means a demux that survived cannot keep the old socket bound while this one
+  # fails to start -- which Desktop would report as an unreachable host.
+  prev="$(cat "$RUN_DIR/demux.pid" 2>/dev/null)"
+  if [ -n "$prev" ] && [ "$prev" != "$$" ] && kill -0 "$prev" 2>/dev/null; then
+    log "DEMUX retiring previous pid=$prev"
+    kill -TERM "$prev" 2>/dev/null
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$prev" 2>/dev/null || break
+      sleep 0.2
+    done
+    kill -KILL "$prev" 2>/dev/null
+  fi
+  rm -f "$DEMUX_SOCK"
+
+  # The interpreter codex-router-deps found a websockets install for; which one
+  # that is depends on what the base image allows.
+  PY="$(cat "$ROUTER_HOME/etc/python" 2>/dev/null)"
+  [ -x "$PY" ] || PY="$ROUTER_HOME/venv/bin/python3"
+  [ -x "$PY" ] || PY="$(command -v python3)"
+
+  # `codexctl trace on` leaves this file behind for the next demux to find,
+  # since the demux is started by Desktop rather than by us.
+  [ -f "$ROUTER_HOME/trace" ] && export CODEX_ROUTER_TRACE=1
+
+  log "DEMUX starting sock=$DEMUX_SOCK py=$PY argv=$*"
+  # The demux runs an app-server of its own for threads that never earn a
+  # sandbox, and it must be the real CLI: `codex` on PATH is this shim.
+  export CODEX_ROUTER_REAL="$REAL"
+  exec "$PY" "$ROUTER_HOME/bin/codex-demux" --sock "$DEMUX_SOCK"
+fi
+
+# app-server daemon, generate-ts, and anything else it grows.
+log "PASSTHROUGH argv=$*"
+exec "$REAL" "$@"
