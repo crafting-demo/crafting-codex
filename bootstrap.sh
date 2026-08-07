@@ -42,27 +42,63 @@ template_exists() { cs template show "$1" -o json >/dev/null 2>&1; }
 # Teardown
 # ---------------------------------------------------------------------------
 
+# `cs sandbox remove` waits for a sandbox to settle before deleting it, so one
+# stuck mid-create blocks every removal queued behind it -- and a teardown that
+# appears to hang is worse than one that says what it left running. These go out
+# at once, and waiting stops after a while: the deletions are server-side and
+# finish without us.
+REMOVE_TIMEOUT="${CODEX_ROUTER_REMOVE_TIMEOUT:-120}"
+
+remove_sandboxes() {
+  [ $# -gt 0 ] || return 0
+  local n pids="" pid left deadline
+  for n in "$@"; do
+    echo "  removing $n"
+    cs sandbox remove "$n" -f --skip-non-exist >/dev/null 2>&1 &
+    pids="$pids $!"
+  done
+  deadline=$(( $(date +%s) + REMOVE_TIMEOUT ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    left=""
+    for pid in $pids; do
+      kill -0 "$pid" 2>/dev/null && left="$left $pid"
+    done
+    [ -n "$left" ] || return 0
+    sleep 2
+  done
+  warn "some sandboxes were still deleting after ${REMOVE_TIMEOUT}s.
+  Crafting finishes those on its own; one wedged in CREATING is the usual cause.
+  'cs -O $ORG sandbox list' will show whether any survived."
+}
+
 if [ "${1:-}" = "--destroy" ] || [ "${1:-}" = "--destroy-all" ]; then
   say "Deleting worker sandboxes"
-  for n in $(cs sandbox list -o json 2>/dev/null \
-             | jq -r ".[]? | select(.meta.name | startswith(\"$PREFIX-\")) | .meta.name"); do
-    echo "  removing $n"; cs sandbox remove "$n" -f --skip-non-exist >/dev/null 2>&1 || true
-  done
+  # shellcheck disable=SC2046
+  remove_sandboxes $(cs sandbox list -o json 2>/dev/null \
+    | jq -r ".[]? | select(.meta.name | startswith(\"$PREFIX-\")) | .meta.name")
   say "Deleting the router sandbox"
-  cs sandbox remove "$ROUTER_SANDBOX" -f --skip-non-exist >/dev/null 2>&1 || true
+  remove_sandboxes "$ROUTER_SANDBOX"
 
   if [ "${1:-}" = "--destroy" ]; then
     say "Done. The templates, pool, and service account were left in place."
     exit 0
   fi
 
-  # The pool holds instances built from the worker template, so it has to go
-  # before the template it is built from.
-  say "Deleting the worker pool"
-  cs sandbox pool remove "$WORKER_POOL" -f >/dev/null 2>&1 || true
+  # The conf names one worker template and pool, but /cr-set-template can point
+  # it at a template of yours, which orphans the pair this repo made under their
+  # default names. Both sets go, or a reinstall inherits the leftovers.
+  say "Deleting the worker pools"
+  for p in "$WORKER_POOL" codex-worker-pool; do
+    [ -n "$p" ] || continue
+    # The pool holds instances built from the worker template, so it has to go
+    # before the template it is built from.
+    cs sandbox pool remove "$p" -f >/dev/null 2>&1 && echo "  $p" || true
+  done
   say "Deleting the templates"
-  cs template remove "$WORKER_TEMPLATE" -f >/dev/null 2>&1 || true
-  cs template remove "$ROUTER_TEMPLATE" -f >/dev/null 2>&1 || true
+  for t in "$WORKER_TEMPLATE" codex-worker "$ROUTER_TEMPLATE"; do
+    [ -n "$t" ] || continue
+    cs template remove "$t" -f >/dev/null 2>&1 && echo "  $t" || true
+  done
   say "Deleting the login token secret and the service account"
   cs secret remove "$TOKEN_SECRET" -f >/dev/null 2>&1 || true
   cs org service-account delete "$SERVICE_ACCOUNT" >/dev/null 2>&1 \

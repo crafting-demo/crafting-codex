@@ -53,10 +53,13 @@ router at it.
 ## Teardown
 
 ```bash
-./uninstall.sh                 # just this machine
-./uninstall.sh --all           # and the router sandbox and its workers
-./bootstrap.sh --destroy-all   # and the templates, pool, secret, service account
+./uninstall.sh           # this machine: the ssh alias, the skills, the prompts
+./uninstall.sh --all     # and the router sandbox and every worker
+./uninstall.sh --purge   # and the templates, pools, secret, service account
 ```
+
+`--purge` also forgets your saved answers, so a reinstall starts over. Removing
+`codex-cloud` from **Settings → Connections → SSH** is yours to do either way.
 
 [DETAILS.md](DETAILS.md) covers how the routing works, what it does not route,
 operating the router, billing, and the repo layout. Crafting's own docs are at

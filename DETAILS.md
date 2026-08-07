@@ -106,6 +106,24 @@ whichever machine runs the app-server, which for a routed thread is the worker
 sandbox rather than your Mac. `install.sh` puts everything on your Mac, and
 `build-template.py` bakes the sandbox-safe files into the templates.
 
+## Teardown, and what can stall it
+
+`./uninstall.sh --purge` is the whole thing: the SSH alias, the skills and
+prompts under `CODEX_HOME`, every `cx-` worker, the router sandbox, the pools,
+the templates, the login token secret, the service account, and your saved
+answers.
+
+It deletes the worker pool and template named in `codex-cloud.conf` *and* the
+ones under this repo's default names, because `/cr-set-template` can point the
+conf at a template of yours and orphan the pair bootstrap made.
+
+Sandbox removals go out in parallel and stop being waited on after 120 seconds
+(`CODEX_ROUTER_REMOVE_TIMEOUT`). `cs sandbox remove` waits for a sandbox to
+settle before deleting it, so one wedged in `Lifecycle:CREATING` will otherwise
+hold up everything queued behind it and make the teardown look hung. The
+deletions are server-side and finish on their own; if a sandbox survives that,
+it is stuck in Crafting rather than in this script.
+
 ## Which OpenAI account pays
 
 Two separate pieces of auth:
